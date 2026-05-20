@@ -142,7 +142,7 @@ export const createBackendUser = async (firebaseUser: User) => {
     const newUser = {
       firebaseUID: firebaseUser.uid,
       firstName: firebaseUser.displayName?.split(' ')[0] || '',
-      lastName: firebaseUser.displayName?.split(' ').slice(1).join(' ') || '',
+      lastName: firebaseUser.displayName?.split(' ').slice(1).join(' ') || 'User',
       email: firebaseUser.email || '',
       avatar: firebaseUser.photoURL || null,
       role: "", // null,

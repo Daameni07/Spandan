@@ -8,6 +8,7 @@ import UserAchievement from '#root/shared/database/models/UserAchievement.js';
 import Badge from '#root/shared/database/models/Badge.js';
 import { updateRoomStats } from '../utils/statsService.js';
 import { calculateScore } from '../utils/calculateScore.js';
+import { BadRequestError, NotFoundError } from 'routing-controllers';
 
 interface InMemoryPoll {
   pollId: string;
@@ -31,6 +32,7 @@ export class PollService {
   private pollSocket = pollSocket;
   private activePolls = new Map<string, InMemoryPoll>(); // pollId -> InMemoryPoll
   private pollTimers = new Map<string, NodeJS.Timeout>(); // pollId -> timer
+
   async createPoll(roomCode: string, data: {
     question: string;
     options: string[];
@@ -38,16 +40,36 @@ export class PollService {
     timer?: number;
     maxPoints?: number;
   }) {
+    const question = String(data.question ?? '').trim();
+    if (!question) {
+      throw new BadRequestError('Poll question is required');
+    }
+
+    const options = Array.isArray(data.options)
+      ? data.options.map((opt) => String(opt).trim()).filter((opt) => opt !== '')
+      : [];
+
+    if (options.length < 2) {
+      throw new BadRequestError('At least two poll options are required');
+    }
+
+    const correctOptionIndex = Number.isInteger(data.correctOptionIndex) && data.correctOptionIndex >= 0 && data.correctOptionIndex < options.length
+      ? data.correctOptionIndex
+      : 0;
+
+    const timer = data.timer !== undefined ? Math.max(0, Math.min(data.timer, 300)) : 30;
+    const maxPoints = data.maxPoints !== undefined ? Math.max(1, data.maxPoints) : 20;
+
     const pollId = crypto.randomUUID();
     const createdAt = new Date();
     const lockedActiveUsers: string[] = pollSocket.getActiveUsersInRoom(roomCode);
     const poll = {
       _id: pollId,
-      question: data.question,
-      options: data.options,
-      correctOptionIndex: data.correctOptionIndex,
-      timer: data.timer ?? 30,
-      maxPoints: data.maxPoints ?? 20,
+      question,
+      options,
+      correctOptionIndex,
+      timer,
+      maxPoints,
       createdAt,
       lockedActiveUsers,
       answers: []
@@ -55,24 +77,28 @@ export class PollService {
 
     const livepoll: InMemoryPoll = {
       pollId,
-      question: data.question,
-      options: data.options,
-      correctOptionIndex: data.correctOptionIndex,
+      question,
+      options,
+      correctOptionIndex,
       responses: {},
       totalResponses: 0,
       userResponses: new Map(),
-      timer: data.timer ?? 0, // 0 means no timer
-      timeLeft: data.timer ?? 0,
+      timer,
+      timeLeft: timer,
       roomCode,
       createdAt,
       lockedActiveUsers: [...lockedActiveUsers],
-      maxPoints: data.maxPoints ?? 20,
+      maxPoints,
     };
 
-    await Room.updateOne(
+    const updateResult = await Room.updateOne(
       { roomCode },
       { $push: { polls: poll } }
     );
+
+    if (updateResult.matchedCount === 0) {
+      throw new NotFoundError('Room not found');
+    }
 
     this.activePolls.set(pollId, livepoll);
 
@@ -200,7 +226,7 @@ export class PollService {
 
     // Emit to all clients in the room
     // console.log(`[POLL Service]Emitting in-memory-poll-update for room ${roomCode}:`, pollData);
-    this.pollSocket.emitToAll(roomCode, 'live-poll-results', pollData);
+    this.pollSocket.emitToRoom(roomCode, 'live-poll-results', pollData);
   }
 
   private getPollData(poll: InMemoryPoll) {

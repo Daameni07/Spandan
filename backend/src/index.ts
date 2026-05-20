@@ -7,7 +7,7 @@ import * as Sentry from '@sentry/node';
 import { setupSentryErrorHandling } from './instrument.js';
 import express, { Express } from 'express';
 import cors from 'cors';
-import { createExpressServer, RoutingControllersOptions } from 'routing-controllers';
+import { useExpressServer, RoutingControllersOptions } from 'routing-controllers';
 import { appConfig } from './config/app.js';
 import { loggingHandler } from './shared/middleware/loggingHandler.js';
 import { authorizationChecker, HttpErrorHandler } from './shared/index.js';
@@ -43,14 +43,12 @@ const moduleOptions: RoutingControllersOptions = {
   cors: corsOptions,
 };
 
-//const app = express();
-const app = createExpressServer({
+const app = express();
+
+useExpressServer(app, {
   ...moduleOptions,
   middlewares: [loggingHandler, HttpErrorHandler], // Add your middleware here
 });
-//app.use(loggingHandler);
-//const routingControllersApp = createExpressServer(moduleOptions);
-//app.use(routingControllersApp);
 
 const openApiSpec = await generateOpenAPISpec(moduleOptions, validators);
 app.use(
@@ -100,6 +98,10 @@ if (NODE_ENV === 'production' || NODE_ENV === 'staging') {
 app.use(function onError(err, req, res, next) {
   let eventId;
   try {
+    console.error('Final error handler caught:', err);
+    if (err && err.stack) {
+      console.error(err.stack);
+    }
     eventId = Sentry.captureException(err);
     console.log(`Error captured in final handler with Sentry ID: ${eventId}`);
   } catch (sentryError) {

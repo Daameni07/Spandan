@@ -27,7 +27,7 @@ export function checkRule(rule: Rule, stats: UserRoomStats): boolean {
 
     case "fast_response":
       return (
-        stats.fastestResponse !== null &&
+        stats.fastestResponse != null &&
         stats.fastestResponse <= rule.threshold
       );
 

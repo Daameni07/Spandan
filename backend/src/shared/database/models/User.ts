@@ -17,6 +17,7 @@ export interface IUserDocument extends Document {
     isVerified?: boolean;
 }
 
+
 const UserSchema = new Schema<IUserDocument>(
     {
         firebaseUID: { type: String, required: true, unique: true, index: true },

@@ -39,15 +39,24 @@ export class FirebaseAuthService extends BaseService implements IAuthService {
     super(database);
     if (!admin.apps.length) {
       if (appConfig.isDevelopment) {
-        admin.initializeApp({
-          credential: admin.credential.cert(
-            {
+        const privateKey = appConfig.firebase.privateKey?.replace(/\\n/g, '\n');
+        if (
+          appConfig.firebase.clientEmail &&
+          privateKey &&
+          appConfig.firebase.projectId
+        ) {
+          admin.initializeApp({
+            credential: admin.credential.cert({
               clientEmail: appConfig.firebase.clientEmail,
-              privateKey: appConfig.firebase.privateKey.replace(/\\n/g, '\n'),
+              privateKey,
               projectId: appConfig.firebase.projectId,
-            }
-          ),
-        });
+            }),
+          });
+        } else {
+          admin.initializeApp({
+            credential: admin.credential.applicationDefault(),
+          });
+        }
       } else {
         admin.initializeApp({
           credential: admin.credential.applicationDefault(),

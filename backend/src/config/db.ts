@@ -7,18 +7,29 @@ export const dbConfig = {
 };
 
 export async function connectToDatabase() {
-  try {
-    // Runtime validation
-    if (typeof dbConfig.url !== 'string') {
-      throw new Error(`Invalid DB_URL: expected string, got ${typeof dbConfig.url}`);
-    }
+  const isDevelopment = env('NODE_ENV') !== 'production';
+  const databaseUrl = dbConfig.url;
 
-    await mongoose.connect(dbConfig.url, {
+  // Skip database connection in development if no DB_URL is set
+  if (!databaseUrl || !databaseUrl.trim()) {
+    if (isDevelopment) {
+      console.warn('⚠️ No DB_URL configured. Running in mock mode (DB operations will be stubbed).');
+      return;
+    }
+    console.error('❌ DB_URL required in production');
+    process.exit(1);
+  }
+
+  try {
+    await mongoose.connect(databaseUrl, {
       dbName: dbConfig.dbName,
     });
     console.log('✅ Connected to MongoDB:', dbConfig.dbName);
   } catch (error) {
     console.error('❌ Failed to connect to MongoDB:', error);
-    process.exit(1);
+    if (!isDevelopment) {
+      process.exit(1);
+    }
+    console.warn('⚠️ Continuing in development mode without database.');
   }
 }

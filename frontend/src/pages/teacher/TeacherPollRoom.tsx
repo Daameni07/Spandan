@@ -21,8 +21,9 @@ import socket from "@/lib/api/socket";
 import { CohostUser } from "@/shared/types";
 import ConfirmationModal from "@/components/ConfirmationModal";
 import { useConfirmationModal } from "@/hooks/useConfirmationModal";
-
-
+import QuestionModeSwitch from "@/components/QuestionModeSwitch";
+import { QuestionMode } from "@/components/QuestionModeSwitch";
+import ManualQuestionForm from "@/components/ManualQuestionForm";
 
 const copyToClipboard = (text: string, message: string) => {
   navigator.clipboard.writeText(text).then(() => {
@@ -38,14 +39,14 @@ interface APIQuestionOption {
 }
 
 interface APIQuestion {
-  questionText: string;
+  questionText?: string;
+  question?: string;
   options: APIQuestionOption[];
 }
 
 interface APIResponse {
   questions: APIQuestion[];
 }
-
 
 export type SupportedLanguage =
   | "en-IN"
@@ -101,8 +102,8 @@ export default function TeacherPollRoom() {
   const roomCode: string = params.code as string;
   const { user: currentUser } = useAuthStore();
   const [_isTranscriptionSettling, _setIsTranscriptionSettling] = useState(false);
-  const [isCreating, setIsCreating] = useState(false)
-  const [inviteLink, setInviteLink] = useState('')
+  const [isCreating, setIsCreating] = useState(false);
+  const [inviteLink, setInviteLink] = useState('');
   const [inviteLinkExpiresAt, setInviteLinkExpiresAt] = useState<number | null>(null);
   const INVITE_TTL_MS = 30 * 60 * 1000;
   const inviteStorageKey = `cohost-invite-link:${roomCode}:${currentUser?.uid ?? "anonymous"}`;
@@ -115,17 +116,14 @@ export default function TeacherPollRoom() {
 
   useEffect(() => {
     if (!currentUser?.uid || !roomCode) return;
-
     const raw = localStorage.getItem(inviteStorageKey);
     if (!raw) return;
-
     try {
       const parsed = JSON.parse(raw) as { inviteLink?: string; expiresAt?: number };
       if (!parsed.inviteLink || !parsed.expiresAt || Date.now() >= parsed.expiresAt) {
         localStorage.removeItem(inviteStorageKey);
         return;
       }
-
       setInviteLink(parsed.inviteLink);
       setInviteLinkExpiresAt(parsed.expiresAt);
     } catch {
@@ -135,30 +133,23 @@ export default function TeacherPollRoom() {
 
   useEffect(() => {
     if (!inviteLink || !inviteLinkExpiresAt) return;
-
     const remainingMs = inviteLinkExpiresAt - Date.now();
     if (remainingMs <= 0) {
       clearInviteLink();
       return;
     }
-
     localStorage.setItem(
       inviteStorageKey,
       JSON.stringify({ inviteLink, expiresAt: inviteLinkExpiresAt })
     );
-
     const timeout = window.setTimeout(clearInviteLink, remainingMs);
     return () => window.clearTimeout(timeout);
   }, [inviteLink, inviteLinkExpiresAt, inviteStorageKey, clearInviteLink]);
 
-
   const [activeSidebarTab, setActiveSidebarTab] = useState<'students' | 'cohosts'>('students');
-
-  // Real Cohosts State
   const [cohosts, setCohosts] = useState<CohostUser[]>([]);
-  // Store the room creator's ID for role-based access
   const [hostId, setHostId] = useState<string | null>(null);
-  // 1. Fetch Cohosts API 
+
   const fetchCohosts = useCallback(async () => {
     try {
       const host = hostId || currentUser?.uid;
@@ -168,30 +159,23 @@ export default function TeacherPollRoom() {
     } catch (error) {
       console.error("Error fetching cohosts:", error);
     }
-  }, [currentUser?.uid, roomCode, hostId,]);
+  }, [currentUser?.uid, roomCode, hostId]);
 
   useEffect(() => {
     fetchCohosts();
   }, [fetchCohosts]);
 
-  // 3. Fetch Room Details on Load (To persist dropdown state on refresh)
   useEffect(() => {
     const fetchRoomDetails = async () => {
       try {
         if (!roomCode || !currentUser?.uid) return;
         const res = await api.get(`/livequizzes/rooms/${roomCode}`, {
-          params: {
-            userId: currentUser.uid,
-            role: 'teacher',
-          },
+          params: { userId: currentUser.uid, role: 'teacher' },
         });
-
         if (res.data.success && res.data.room?.controls) {
           const { micBlocked, pollRestricted } = res.data.room.controls;
-
           if (micBlocked) {
             setRoomControlMode('mic-disabled');
-            // Agar mic blocked hai toh state disable kar do
             setIsRecording(false);
             setIsListening(false);
             setIsLiveRecordingActive(false);
@@ -199,6 +183,24 @@ export default function TeacherPollRoom() {
             setRoomControlMode('poll-disabled');
           } else {
             setRoomControlMode('full');
+          }
+
+          const loadedQuestions = Array.isArray(res.data.room.generatedQuestions)
+            ? res.data.room.generatedQuestions.map((q: any) => ({
+                question: String(q.question || ''),
+                options: Array.isArray(q.options)
+                  ? q.options.map((opt: any) => String(opt ?? ''))
+                  : [],
+                correctOptionIndex:
+                  typeof q.correctOptionIndex === 'number' && q.correctOptionIndex >= 0
+                    ? Math.min(q.correctOptionIndex, Math.max(0, (Array.isArray(q.options) ? q.options.length : 1) - 1))
+                    : 0,
+              }))
+            : [];
+
+          if (loadedQuestions.length > 0) {
+            setGeneratedQuestions(loadedQuestions);
+            setShowPreview(true);
           }
         } else if (!res.data.success) {
           toast.error(res.data.message || 'You do not have access to this room');
@@ -210,24 +212,18 @@ export default function TeacherPollRoom() {
         navigate({ to: '/teacher/manage-rooms' });
       }
     };
-
     fetchRoomDetails();
   }, [roomCode, currentUser?.uid, navigate]);
 
-  // 2. Remove Cohost API 
   const handleRemoveCohost = async (cohostId: string) => {
-
-    //confirmation before proceeding
     const confirmed = await showModal({
       type: 'delete',
       title: 'Are you sure you want to remove this co-host?',
       description: 'This action cannot be undone.',
       confirmText: 'Remove Co-host',
-    })
-
+    });
     if (!confirmed) return;
     try {
-
       await api.patch(`/livequizzes/rooms/cohost/${roomCode}`, {
         teacherId: currentUser?.uid,
         userId: cohostId
@@ -239,19 +235,15 @@ export default function TeacherPollRoom() {
     }
   };
 
-
   const isHost = currentUser?.uid === hostId;
 
-  //handle invite cohost
   const handleInviteCohost = async () => {
-
     setIsCreating(true);
     try {
       if (!currentUser?.uid) {
         toast.error("Authentication required to create assessments");
         return;
       }
-
       const res = await api.post(`/livequizzes/rooms/cohost/${roomCode}`, {
         userId: currentUser.uid
       });
@@ -266,57 +258,39 @@ export default function TeacherPollRoom() {
     }
   };
 
-  const LeaveCohost = async (roomCode: string, cohostId: string) => {
-    //confirmation before proceeding
+  const leaveCohost = async (roomCode: string, cohostId: string) => {
     const confirmed = await showModal({
       type: 'default',
       title: 'are you sure you want to end this room?',
-      description: `This action cannot be undone.
-      You will lose access to this room and all its data.`,
+      description: `This action cannot be undone.\n      You will lose access to this room and all its data.`,
       confirmText: 'Leave Room',
-    })
-
+    });
     if (!confirmed) return;
-    socket.emit('cohost-leave', roomCode, cohostId)
+    socket.emit('cohost-leave', roomCode, cohostId);
     toast.info("Left the room.");
     navigate({ to: `/teacher/cohosted-rooms` });
-  }
+  };
 
-  //handle cohost mic mute or unmute toggle
   const handleToggleCohostMic = async (cohostId: string, isMicMuted: boolean) => {
     if (!cohostId || !currentUser?.uid) return;
-    // instant UI change
-    setCohosts(prev =>
-      prev.map(c =>
-        c.userId === cohostId ? { ...c, isMicMuted } : c
-      )
-    );
-
+    setCohosts(prev => prev.map(c => c.userId === cohostId ? { ...c, isMicMuted } : c));
     try {
       await api.patch(`/livequizzes/rooms/cohost/${roomCode}/mic`, {
         teacherId: currentUser.uid,
         userId: cohostId,
         isMicMuted
       });
-
-      setCohosts(prev =>
-        prev.map(cohost => {
-          const id = cohost.userId;
-          return id === cohostId ? { ...cohost, isMicMuted } : cohost;
-        })
-      );
+      setCohosts(prev => prev.map(cohost => {
+        const id = cohost.userId;
+        return id === cohostId ? { ...cohost, isMicMuted } : cohost;
+      }));
     } catch (error) {
       console.error("Error toggling cohost mic:", error);
-      setCohosts(prev =>
-        prev.map(c =>
-          c.userId === cohostId ? { ...c, isMicMuted: !isMicMuted } : c
-        )
-      );
+      setCohosts(prev => prev.map(c => c.userId === cohostId ? { ...c, isMicMuted: !isMicMuted } : c));
       toast.error("Failed to update co-host microphone");
     }
   };
 
-  // Helper Hooks - defined at the top to avoid temporal dead zone
   const filterQuestionOptions = useCallback((questionData: GeneratedQuestion): GeneratedQuestion => {
     const correctOption = questionData.options[questionData.correctOptionIndex];
     let newCorrectIndex = questionData.correctOptionIndex;
@@ -328,15 +302,11 @@ export default function TeacherPollRoom() {
       const incorrectOptions = questionData.options
         .filter((_, idx) => idx !== questionData.correctOptionIndex)
         .filter(opt => opt.trim() !== "");
-
-      const shuffledIncorrect = incorrectOptions
-        .sort(() => Math.random() - 0.5)
-        .slice(0, 3);
+      const shuffledIncorrect = incorrectOptions.sort(() => Math.random() - 0.5).slice(0, 3);
 
       if (questionData.correctOptionIndex < 4) {
         filteredOptions = Array(4).fill("");
         filteredOptions[questionData.correctOptionIndex] = correctOption;
-
         let incorrectIndex = 0;
         for (let i = 0; i < 4; i++) {
           if (i !== questionData.correctOptionIndex && incorrectIndex < shuffledIncorrect.length) {
@@ -347,7 +317,6 @@ export default function TeacherPollRoom() {
         newCorrectIndex = Math.floor(Math.random() * 4);
         filteredOptions = Array(4).fill("");
         filteredOptions[newCorrectIndex] = correctOption;
-
         let incorrectIndex = 0;
         for (let i = 0; i < 4; i++) {
           if (i !== newCorrectIndex && incorrectIndex < shuffledIncorrect.length) {
@@ -356,30 +325,25 @@ export default function TeacherPollRoom() {
         }
       }
     }
-
-    return {
-      ...questionData,
-      options: filteredOptions,
-      correctOptionIndex: newCorrectIndex
-    };
+    return { ...questionData, options: filteredOptions, correctOptionIndex: newCorrectIndex };
   }, []);
 
   // UI State
   const [showPollModal, setShowPollModal] = useState(false);
   const [showResultsModal, setShowResultsModal] = useState(false);
 
-  // Existing state
+  // Poll form state
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState(["", "", "", ""]);
   const [correctOptionIndex, setCorrectOptionIndex] = useState<number>(0);
   const [timer, _setTimer] = useState<number>(30);
   const [maxPoints, setMaxPoints] = useState<number | ''>(20);
   const [pollResults, setPollResults] = useState<PollResults>({});
-  // State for live poll results
+
   type LivePollResult = {
-    responses: Record<string, number>; // optionIndex: count
+    responses: Record<string, number>;
     totalResponses: number;
-    userResponses: Record<string, Array<{ userId: string; userName: string }>>; // optionIndex: users[]
+    userResponses: Record<string, Array<{ userId: string; userName: string }>>;
     question?: string;
     options?: string[];
     timeLeft?: number;
@@ -391,17 +355,15 @@ export default function TeacherPollRoom() {
   const [isEndingRoom, setIsEndingRoom] = useState(false);
   const [showEndRoomConfirm, setShowEndRoomConfirm] = useState(false);
 
-  // GenAI feature state
+  // GenAI state
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedQuestions, setGeneratedQuestions] = useState<GeneratedQuestion[]>([]);
   const [showPreview, setShowPreview] = useState(false);
   const [_editingQuestionIndex, setEditingQuestionIndex] = useState<number | null>(null);
   const [questionSpec, setQuestionSpec] = useState("");
-  const [selectedModel, setSelectedModel] = useState("deepseek-r1:70b");
+  const [selectedModel, setSelectedModel] = useState("gpt-3.5-turbo");
   const [questionCount, setQuestionCount] = useState<number>(3);
 
-  // Queue for auto-generated questions while live recording is ongoing.
-  // These are hidden from the UI until the teacher stops the mic.
   const [queuedGeneratedQuestions, setQueuedGeneratedQuestions] = useState<GeneratedQuestion[]>([]);
   const pendingTextChunksRef = useRef<string[]>([]);
   const processingQueueRef = useRef(false);
@@ -409,7 +371,6 @@ export default function TeacherPollRoom() {
   const bufferTextRef = useRef<string>("");
   const queuedGeneratedQuestionsRef = useRef<GeneratedQuestion[]>([]);
 
-  // New state for member names toggle
   const [isGenerateClicked, setIsGenerateClicked] = useState(false);
   const [_audioManagerKey, setAudioManagerKey] = useState(0);
 
@@ -419,7 +380,7 @@ export default function TeacherPollRoom() {
   const [isListening, setIsListening] = useState(false);
   const [interimTranscript, setInterimTranscript] = useState("");
   const [language, setLanguage] = useState<SupportedLanguage>("en-IN");
-  const [autoGenInterval, setAutoGenInterval] = useState<number>(30); // Default 30s
+  const [autoGenInterval, setAutoGenInterval] = useState<number>(30);
   const [isCustomInterval, setIsCustomInterval] = useState(false);
   const [isIntervalLocked, setIsIntervalLocked] = useState(false);
   const [customIntervalInput, setCustomIntervalInput] = useState<string>("30");
@@ -433,44 +394,37 @@ export default function TeacherPollRoom() {
   const [showAudioOptions, setShowAudioOptions] = useState(false);
   const [useWhisper, setUseWhisper] = useState(false);
   const [useWhisperGGML, setUseWhisperGGML] = useState(false);
-  const [useExternlApi, _setExternalApi] = useState(false)
+  const [useExternalApi, _setExternalApi] = useState(false);
   const [showRecordModal, setShowRecordModal] = useState(false);
-  const [showExternalModal, setShowExternalModal] = useState(false)
+  const [showExternalModal, setShowExternalModal] = useState(false);
   const [_showGGMLRecordModel, setShowGGMLRecordModel] = useState(false);
   const [audioBlob, setAudioBlob] = useState<Blob | undefined>(undefined);
 
-  // Recording lock state
   const [recordingLockStatus, setRecordingLockStatus] = useState<{
     isLocked: boolean;
     currentRecorder?: { userId: string; userName?: string; lockedSince: Date };
   }>({ isLocked: false });
-  const recordingLockPollIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const [micLockAlert, setMicLockAlert] = useState<string | null>(null);
+  const recordingLockPollIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [_micLockAlert, _setMicLockAlert] = useState<string | null>(null);
 
-
-  // UI state for queued question viewer shown after mic stops
-  const [_showQueuedViewer, setShowQueuedViewer] = useState(false);
-  const [_queuedViewerIndex, setQueuedViewerIndex] = useState(0);
+  const [showQueuedViewer, setShowQueuedViewer] = useState(false);
+  const [queuedViewerIndex, setQueuedViewerIndex] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [_isTranscribing, setIsTranscribing] = useState<boolean>(false);
 
-  // Question card state
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [editingQuestion, setEditingQuestion] = useState<number | null>(null);
 
-  // Whisper transcription state and Whisper service for speech-to-text
   const transcriber = useTranscriber();
   const [transcript, setTranscript] = useState<string | null>(null);
   const [isLiveRecordingActive, setIsLiveRecordingActive] = useState(false);
   const [_localVoiceActivity, _setLocalVoiceActivity] = useState(false);
-  // const [showStudentsModal, setShowStudentsModal] = useState(false)
   const [students, setStudents] = useState<Array<{ id?: string; name?: string }>>([]);
 
   const [_joinedRoom, setJoinedRoom] = useState(false);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false); // Collapsed by default on mobile
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  // State for upload options
   const [showPasteModal, setShowPasteModal] = useState(false);
   const [showUploadTextFileModal, setShowUploadTextFileModal] = useState(false);
   const [pastedContent, setPastedContent] = useState('');
@@ -479,43 +433,47 @@ export default function TeacherPollRoom() {
 
   const [roomControlMode, setRoomControlMode] = useState<'full' | 'mic-disabled' | 'poll-disabled'>('full');
 
-  // Handler for saving question edits
+  // Question Mode
+  const [questionMode, setQuestionMode] = useState<QuestionMode>('auto');
+
+  const handleQuestionModeChange = (mode: QuestionMode) => {
+    setQuestionMode(mode);
+  };
+
+  const handleAddManualQuestion = useCallback((q: GeneratedQuestion) => {
+    setGeneratedQuestions(prev => [...prev, q]);
+    setShowPreview(true);
+  }, []);
+
   const handleSaveQuestionEdit = () => {
     setEditingQuestion(null);
   };
 
-  // Handler for updating question text
   const handleQuestionChange = (value: string) => {
     const updatedQuestions = [...generatedQuestions];
     updatedQuestions[currentQuestionIndex].question = value;
     setGeneratedQuestions(updatedQuestions);
   };
 
-  // Handler for updating option text
   const handleOptionChange = (optionIndex: number, value: string) => {
     const updatedQuestions = [...generatedQuestions];
     updatedQuestions[currentQuestionIndex].options[optionIndex] = value;
     setGeneratedQuestions(updatedQuestions);
   };
 
-  // Handler for marking an option as correct
   const handleOptionClick = (optionIndex: number) => {
     const updatedQuestions = [...generatedQuestions];
     updatedQuestions[currentQuestionIndex].correctOptionIndex = optionIndex;
     setGeneratedQuestions(updatedQuestions);
   };
 
-
-
-  // Socket connection and event management
+  // Socket connection
   useEffect(() => {
     if (!roomCode) return;
 
-    // Join room function
     const joinRoom = () => {
       socket.emit('join-room', { roomCode, user: currentUser?.uid }, (response: any) => {
         if (response?.status === 'error') {
-          // Error joining room
           console.log('Error joining room:', response);
         } else {
           setJoinedRoom(true);
@@ -523,15 +481,10 @@ export default function TeacherPollRoom() {
       });
     };
 
-    // Handle poll updates
     const handlePollUpdate = (data: any) => {
-      // console.log('[DEBUG] Received in-memory-poll-update event:', data);
-
       setLivePollResults(prev => {
         const updated = { ...prev };
-        const pollId = data.pollId || roomCode; // Fallback to roomCode if pollId is not provided
-
-        // Initialize or update poll data
+        const pollId = data.pollId || roomCode;
         updated[pollId] = {
           ...(updated[pollId] || {}),
           responses: { ...data.responses },
@@ -542,17 +495,11 @@ export default function TeacherPollRoom() {
           timeLeft: data.timeLeft,
           timer: data.timer
         };
-
-        // console.log('Updated poll results:', updated[pollId]);
         return { ...updated };
       });
     };
 
-    // Set up all socket event listeners
     const setupEventListeners = () => {
-      // console.log('Setting up socket listeners...');
-
-      // Clear any existing listeners
       socket.off('live-poll-results');
       socket.off('room-updated');
       socket.off('connect');
@@ -565,11 +512,8 @@ export default function TeacherPollRoom() {
       socket.off('room-ended');
       socket.off('cohost-mic-updated');
 
-      // Set up new listeners
       socket.on('live-poll-results', handlePollUpdate);
-      socket.on('poll-results-updated', (data) => {
-        setPollResults(data)
-      });
+      socket.on('poll-results-updated', (data) => { setPollResults(data); });
 
       socket.on('room-control-updated', (data) => {
         setRoomControlMode(data.mode);
@@ -579,17 +523,24 @@ export default function TeacherPollRoom() {
           setIsLiveRecordingActive(false);
         }
       });
+
+      socket.on('auto-generation-updated', (data) => {
+        if (data?.mode) {
+          setQuestionMode(data.mode);
+        }
+      });
+
       socket.on('roomControlsUpdated', (controls) => {
         if (controls.micBlocked) setRoomControlMode('mic-disabled');
         else if (controls.pollRestricted) setRoomControlMode('poll-disabled');
         else setRoomControlMode('full');
-
         if (controls.micBlocked) {
           setIsRecording(false);
           setIsListening(false);
           setIsLiveRecordingActive(false);
         }
       });
+
       socket.on('cohost-joined', (data) => {
         setCohosts(data.activeCohosts || []);
         toast.success('A co-host has joined the room');
@@ -618,14 +569,10 @@ export default function TeacherPollRoom() {
         setIsEndingRoom(false);
         toast.info(data.message ?? 'Room has ended');
         if (!isHost) navigate({ to: '/teacher/cohosted-rooms' });
-
       });
 
       socket.on('room-updated', (updatedRoom) => {
-        // console.log('Room updated:', updatedRoom);
         setStudents(updatedRoom.students || []);
-
-        // Save Host ID for conditional UI rendering
         if (updatedRoom.teacherId) {
           setHostId(updatedRoom.teacherId);
         }
@@ -641,33 +588,14 @@ export default function TeacherPollRoom() {
         }
       });
 
-      socket.on('connect', () => {
-        // console.log('Socket connected with ID:', socket.id);
-        joinRoom(); // Re-join room on reconnect
-      });
-
-      socket.on('disconnect', (_reason) => {
-        // console.log('Socket disconnected:', reason);
-        setJoinedRoom(false);
-      });
-
-      socket.on('connect_error', (_error) => {
-        // Socket connection error
-        setJoinedRoom(false);
-      });
-
-      socket.on('error', (_error) => {
-        // Socket error
-      });
+      socket.on('connect', () => { joinRoom(); });
+      socket.on('disconnect', (_reason) => { setJoinedRoom(false); });
+      socket.on('connect_error', (_error) => { setJoinedRoom(false); });
+      socket.on('error', (_error) => { });
     };
 
-    // Initial setup
-    // joinRoom();
     setupEventListeners();
-
-    if (socket.connected) {
-      joinRoom();
-    }
+    if (socket.connected) { joinRoom(); }
 
     return () => {
       socket.off('live-poll-results');
@@ -686,25 +614,19 @@ export default function TeacherPollRoom() {
     };
   }, [roomCode]);
 
-  // Update current poll responses when livePollResults changes
   useEffect(() => {
     const currentQuestion = generatedQuestions[currentQuestionIndex];
     if (!currentQuestion) return;
 
-    // Find matching poll data by comparing questions and options
     const pollEntry = Object.entries(livePollResults).find(([_, poll]) => {
-      // Check if questions match (case insensitive and trimmed)
       const questionsMatch = poll.question &&
         currentQuestion.question &&
         poll.question.trim().toLowerCase() === currentQuestion.question.trim().toLowerCase();
-
-      // Check if options match (length and content)
       const optionsMatch = poll.options &&
         poll.options.length === currentQuestion.options.length &&
         poll.options.every((opt, i) =>
           opt.trim().toLowerCase() === currentQuestion.options[i]?.trim().toLowerCase()
         );
-
       return questionsMatch || optionsMatch;
     });
 
@@ -727,48 +649,37 @@ export default function TeacherPollRoom() {
   const isMicMutedByHost = !isHost && isCurrentUserCohostMuted;
   const isMicUnavailable = isMicLockedByOtherUser || isMicMutedByHost;
 
-
-  // Process pending text chunks sequentially and store results in queuedGeneratedQuestionsRef
   const processPendingQueue = useCallback(async () => {
     if (processingQueueRef.current) return;
     processingQueueRef.current = true;
-
 
     while (pendingTextChunksRef.current.length > 0) {
       const chunk = pendingTextChunksRef.current.shift();
       if (!chunk) continue;
       try {
-        const formData = new FormData();
-        formData.append('transcript', chunk);
-        if (questionSpec) formData.append('questionSpec', questionSpec);
-        formData.append('model', selectedModel);
-        formData.append('questionCount', questionCount.toString());
+        const payload = {
+          transcript: chunk,
+          questionSpec: questionSpec || undefined,
+          model: selectedModel,
+          questionCount: questionCount.toString(),
+        };
 
-        const response = await api.post(`/livequizzes/rooms/${roomCode}/generate-questions`, formData, {
-          headers: { 'Content-Type': 'multipart/form-data' },
-        });
+        const response = await api.post(`/livequizzes/rooms/${roomCode}/generate-questions`, payload);
 
         const rawQuestions = response.data.questions || [];
-
         const cleanQuestions = rawQuestions
-          .filter((q: APIQuestion) => typeof q.questionText === 'string' && q.questionText.trim() !== '')
+          .filter((q: any) =>
+  typeof (q.questionText || q.question) === 'string' &&
+  (q.questionText || q.question).trim() !== ''
+)
           .map((q: APIQuestion): GeneratedQuestion => {
-            const options = Array.isArray(q.options) ? q.options.map((opt) => opt.text ?? '') : [];
-            const correctOptionIndex = Array.isArray(q.options) ? q.options.findIndex((opt) => opt.correct) : 0;
-
-            const validCorrectOptionIndex = correctOptionIndex >= 0 && correctOptionIndex < options.length
-              ? correctOptionIndex
-              : 0;
-
-            return {
-              question: q.questionText,
-              options: options,
-              correctOptionIndex: validCorrectOptionIndex,
-            };
+            const opts = Array.isArray(q.options) ? q.options.map((opt) => opt.text ?? '') : [];
+            const correctIdx = Array.isArray(q.options) ? q.options.findIndex((opt) => opt.correct) : 0;
+            const validIdx = correctIdx >= 0 && correctIdx < opts.length ? correctIdx : 0;
+            return { question: q.questionText || (q as any).question, options: opts, correctOptionIndex: validIdx };
           });
 
         const filteredQuestions = cleanQuestions.map((q: GeneratedQuestion) => filterQuestionOptions(q));
-
         if (filteredQuestions.length > 0) {
           queuedGeneratedQuestionsRef.current = [...queuedGeneratedQuestionsRef.current, ...filteredQuestions];
           setQueuedGeneratedQuestions([...queuedGeneratedQuestionsRef.current]);
@@ -777,35 +688,16 @@ export default function TeacherPollRoom() {
         // Failed to process queued chunk
       }
     }
-
     processingQueueRef.current = false;
   }, [questionSpec, selectedModel, questionCount, roomCode, filterQuestionOptions]);
 
-  // Enqueue a text chunk and start processing the queue
   const enqueueTextChunk = useCallback((textChunk: string) => {
     if (!textChunk || !textChunk.trim()) return;
     pendingTextChunksRef.current.push(textChunk.trim());
-    // start processing (fire-and-forget)
     void processPendingQueue();
   }, [processPendingQueue]);
 
-
-
-  /* useEffect(() => {
-     if (transcriber.output?.text) {
-       setTranscript(transcriber.output.text);
-       setIsProcessing(false);
-     }
-  }, [transcriber.output]);*/
-
-  // // Update processing state based on transcriber.isBusy
-  // useEffect(() => {
-  //   setIsProcessing(transcriber.isBusy);
-  // }, [transcriber.isBusy]);
-
-  // Reset auto-generation buffers when manually clearing GenAI data
   useEffect(() => {
-    // sync ref with state
     queuedGeneratedQuestionsRef.current = queuedGeneratedQuestions;
   }, [queuedGeneratedQuestions]);
 
@@ -815,12 +707,10 @@ export default function TeacherPollRoom() {
       pendingTextChunksRef.current = [];
       queuedGeneratedQuestionsRef.current = [];
       setQueuedGeneratedQuestions([]);
-      // Reset timer to current time when recording starts
       lastGenerationTimeRef.current = Date.now();
     }
   }, [isRecording, isLiveRecordingActive]);
 
-  // Keep bufferTextRef in sync with the latest transcript
   useEffect(() => {
     const textBuffer = (useWhisper || useWhisperGGML)
       ? (transcriber.accumulatedChunks ?? []).map((c) => c.text).join(" ").trim()
@@ -828,648 +718,69 @@ export default function TeacherPollRoom() {
     bufferTextRef.current = textBuffer;
   }, [displayTranscript, transcriber.accumulatedChunks, useWhisper, useWhisperGGML]);
 
-  /* // Commented out old word-checkpoint logic
-  useEffect(() => {
-    if (!useWhisper && !useWhisperGGML) return;
-    // Build buffer text from accumulated chunks
-    const text = (transcriber.accumulatedChunks ?? []).map((c) => c.text).join(" ").trim();
-    bufferTextRef.current = text;
-    const words = text ? text.split(/\s+/).filter(Boolean) : [];
-    while (words.length - processedWordsRef.current >= 100) {
-      const chunkWords = words.slice(processedWordsRef.current, processedWordsRef.current + 100).join(" ");
-      processedWordsRef.current += 100;
-      enqueueTextChunk(chunkWords);
-    }
-  }, [transcriber.accumulatedChunks, useWhisper, useWhisperGGML, enqueueTextChunk]);
-
-  // Watch non-Whisper live transcript (Web Speech API) and enqueue 100-word checkpoints
-  useEffect(() => {
-    if (useWhisper || useWhisperGGML) return;
-    const text = displayTranscript.trim();
-    bufferTextRef.current = text;
-    const words = text ? text.split(/\s+/).filter(Boolean) : [];
-    while (words.length - processedWordsRef.current >= 100) {
-      const chunkWords = words.slice(processedWordsRef.current, processedWordsRef.current + 100).join(" ");
-      processedWordsRef.current += 100;
-      enqueueTextChunk(chunkWords);
-    }
-  }, [displayTranscript, useWhisper, useWhisperGGML, enqueueTextChunk]);
-  */
-
   const updateAudioLevel = useCallback(() => {
     if (analyserRef.current) {
       const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
       analyserRef.current.getByteFrequencyData(dataArray);
-
       animationFrameRef.current = requestAnimationFrame(updateAudioLevel);
-
-      const frequencyBars = Array.from(dataArray.slice(0, 16)).map(
-        (value) => value / 255
-      );
+      const frequencyBars = Array.from(dataArray.slice(0, 16)).map((value) => value / 255);
       setFrequencyData(frequencyBars);
     }
   }, []);
 
-  const handleRecordingToggle = useCallback(async (isFromOnEnd?: boolean) => {
-    if (isMicMutedByHost) {
-      toast.error("Host has muted your microphone");
-      return;
-    }
-    if (isRecording || isFromOnEnd) {
-      setIsRecording(false);
-      setIsListening(false);
-      setIsLiveRecordingActive(false);
-
-      if (mediaRecorderRef.current) {
-        mediaRecorderRef.current.stop();
-        mediaRecorderRef.current.stream
-          .getTracks()
-          .forEach((track) => track.stop());
-      }
-
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-      }
-
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-      }
-
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-
-      // Release recording lock
-      try {
-        if (currentUser?.uid) {
-          await api.post(`/livequizzes/rooms/${roomCode}/recording/stop`, {
-            userId: currentUser.uid
-          });
-        }
-      } catch (error) {
-        console.error("Error releasing recording lock:", error);
-      }
-
-      // When recording stops, flush any remaining text (<100 words) into queue and
-      // wait for queued processing to finish, then reveal the generated questions.
-      setIsProcessing(true);
-      try {
-        // Determine current buffer based on mode
-        const textBuffer = (useWhisper || useWhisperGGML)
-          ? (transcriber.accumulatedChunks ?? []).map((c) => c.text).join(" ").trim()
-          : displayTranscript.trim();
-
-        bufferTextRef.current = textBuffer;
-
-        const words = textBuffer ? textBuffer.split(/\s+/).filter(Boolean) : [];
-        const remaining = words.length - processedWordsRef.current;
-        if (remaining > 0) {
-          const remainderText = words.slice(processedWordsRef.current, processedWordsRef.current + remaining).join(" ");
-          processedWordsRef.current += remaining;
-          enqueueTextChunk(remainderText);
-        }
-
-        // Wait for queue to finish processing
-        while (processingQueueRef.current || pendingTextChunksRef.current.length > 0) {
-          // small sleep
-          // eslint-disable-next-line no-await-in-loop
-          await new Promise((r) => setTimeout(r, 200));
-        }
-
-        // Move queued generated questions into visible generatedQuestions list
-        if (queuedGeneratedQuestionsRef.current.length > 0) {
-          const queued = queuedGeneratedQuestionsRef.current;
-          const prevLen = generatedQuestions.length;
-          setGeneratedQuestions((prev) => [...prev, ...queued]);
-          setShowPreview(true);
-          // open the single-question viewer starting at the first newly added question
-          setShowQueuedViewer(true);
-          setQueuedViewerIndex(prevLen);
-          // clear queued refs/state
-          queuedGeneratedQuestionsRef.current = [];
-          setQueuedGeneratedQuestions([]);
-          toast.success("Generated questions are ready");
-        }
-      } catch (err) {
-        // Error finalizing queued question generation
-      } finally {
-        setIsProcessing(false);
-      }
-    } else {
-      try {
-
-        // Check if someone else is recording
-        if (isMicLockedByOtherUser) {
-          toast.error(`${recordingLockStatus.currentRecorder?.userName || "Another user"} is already using the mic`);
-          return;
-        }
-        // Try to acquire recording lock before starting
-        if (currentUser?.uid) {
-          const lockResponse = await api.post(`/livequizzes/rooms/${roomCode}/recording/start`, {
-            userId: currentUser.uid,
-            userName: currentUser.name || "Unknown"
-          });
-
-          if (!lockResponse.data.success) {
-            toast.error(lockResponse.data.message);
-            return;
-          }
-        }
-
-        if (useWhisper) {
-          setShowRecordModal(true);
-        }
-        else if (useWhisperGGML) {
-          setShowGGMLRecordModel(true)
-        }
-        else if (useExternlApi) {
-          setShowExternalModal(true)
-        }
-        else {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
-          });
-
-          audioContextRef.current = new AudioContext();
-          const source = audioContextRef.current.createMediaStreamSource(stream);
-          analyserRef.current = audioContextRef.current.createAnalyser();
-          analyserRef.current.fftSize = 256;
-          source.connect(analyserRef.current);
-
-          updateAudioLevel();
-
-          mediaRecorderRef.current = new MediaRecorder(stream);
-          mediaRecorderRef.current.start();
-
-          if (recognitionRef.current) {
-            recognitionRef.current.start();
-          }
-
-          setIsRecording(true);
-          setIsListening(true);
-          setInterimTranscript("");
-        }
-      } catch (error) {
-        // Error accessing microphone
-        // Ensure lock is released if there was an error
-        try {
-          if (currentUser?.uid) {
-            await api.post(`/livequizzes/rooms/${roomCode}/recording/stop`, {
-              userId: currentUser.uid
-            });
-          }
-        } catch (releaseError) {
-          console.error("Error releasing lock after failed start:", releaseError);
-        }
-        console.error("Error accessing microphone:", error);
-      }
-    }
-  }, [
-    isRecording,
-    setIsRecording,
-    setIsListening,
-    setIsLiveRecordingActive,
-    useWhisper,
-    useWhisperGGML,
-    useExternlApi,
-    transcriber.accumulatedChunks,
-    displayTranscript,
-    enqueueTextChunk,
-    generatedQuestions.length,
-    setGeneratedQuestions,
-    setShowPreview,
-    setShowQueuedViewer,
-    setQueuedViewerIndex,
-    setQueuedGeneratedQuestions,
-    updateAudioLevel,
-    setInterimTranscript,
-    roomCode,
-    recordingLockStatus,
-  ]);
-
-  // NEW: Time-based automatic question generation trigger
-  useEffect(() => {
-    if (!isRecording && !isLiveRecordingActive) {
-      // Keep it updated so that when recording starts, it's fresh
-      lastGenerationTimeRef.current = Date.now();
-      return;
-    }
-
-    const intervalId = setInterval(() => {
-      const now = Date.now();
-      const elapsedSeconds = (now - lastGenerationTimeRef.current) / 1000;
-
-      if (elapsedSeconds >= autoGenInterval) {
-        // Build the current transcript buffer based on active mode
-        // Use the Ref-synced text to avoid state-closure issues and keep effect stable
-        const textBuffer = bufferTextRef.current;
-
-        // Check if there are internal words to process
-        const words = textBuffer ? textBuffer.split(/\s+/).filter(Boolean) : [];
-        const remainingCount = words.length - processedWordsRef.current;
-
-        if (remainingCount > 0) {
-          const chunkWords = words.slice(processedWordsRef.current, processedWordsRef.current + remainingCount).join(" ");
-          processedWordsRef.current += remainingCount;
-          enqueueTextChunk(chunkWords);
-        }
-
-        // Always reset time to the current "tick" regardless of word availability
-        // to ensure we keep trying if the user starts talking again.
-        lastGenerationTimeRef.current = now;
-      }
-    }, 1000); // Check every second
-
-    return () => clearInterval(intervalId);
-  }, [isRecording, isLiveRecordingActive, autoGenInterval, enqueueTextChunk]);
-
-  useEffect(() => {
-    if (typeof window !== "undefined" && "webkitSpeechRecognition" in window) {
-      const recognition = new window.webkitSpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = language;
-
-      recognition.onstart = () => {
-        setIsListening(true);
-      };
-
-      recognition.onresult = (event: any) => {
-        let interim = "";
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i];
-          if (result.isFinal) {
-            setLiveTranscript((prev) => prev + " " + result[0].transcript);
-          } else {
-            interim += result[0].transcript;
-          }
-        }
-        setInterimTranscript(interim);
-      };
-
-      recognition.onend = () => {
-        // setIsListening(false);
-        // setIsRecording(false);
-        const IS_FROM_ONEND = true;
-        handleRecordingToggle(IS_FROM_ONEND);
-      };
-      recognition.onerror = (_event: any) => {
-        // Recognition error
-      };
-
-      recognitionRef.current = recognition;
-    } else {
-      toast.error("Web Speech API is not supported in this browser.");
-    }
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
-  }, [language, handleRecordingToggle]);
-
-  // Poll recording lock status and listen to socket events
-  useEffect(() => {
-    const pollRecordingStatus = async () => {
-      try {
-        if (!roomCode) return;
-        const response = await api.get(`/livequizzes/rooms/${roomCode}/recording/status`);
-        setRecordingLockStatus(response.data);
-      } catch (error) {
-        console.error("Error polling recording status:", error);
-      }
-    };
-
-    // Poll every 2 seconds
-    pollRecordingStatus();
-    recordingLockPollIntervalRef.current = setInterval(pollRecordingStatus, 2000);
-
-    // Listen for recording started event
-    socket.on('recording-started', (data: any) => {
-      setRecordingLockStatus({
-        isLocked: true,
-        currentRecorder: data
-      });
-    });
-
-    // Listen for recording stopped event
-    socket.on('recording-stopped', () => {
-      setRecordingLockStatus({ isLocked: false });
-    });
-
-    return () => {
-      if (recordingLockPollIntervalRef.current) {
-        clearInterval(recordingLockPollIntervalRef.current);
-      }
-      socket.off('recording-started');
-      socket.off('recording-stopped');
-    };
-  }, [roomCode]);
-
-  const handleAudioFromRecording = async (data: Blob) => {
-    if (!data) return;
-
-    setAudioBlob(data);
-    setIsTranscriptionComplete(true)
-  };
-
-  const processAudioBlob = async () => {
-    if (!audioBlob) return;
-
-    setIsProcessing(true);
-
-    /* const fileReader = new FileReader();
- 
-     fileReader.onloadend = async () => {
-       const arrayBuffer = fileReader.result as ArrayBuffer;
-       if (!arrayBuffer) return;
- 
-       const audioCTX = new AudioContext({
-         sampleRate: 16000, // Whisper default sample rate
-       });
- 
-       const decoded = await audioCTX.decodeAudioData(arrayBuffer);
-       transcriber.onInputChange();
-       transcriber.start(decoded);*/
-
-    setIsRecording(false);
-    setIsListening(false);
-    setShowRecordModal(false);
-    setShowExternalModal(false)
-    setShowGGMLRecordModel(false)
-    // };
-
-    // fileReader.readAsArrayBuffer(audioBlob);
-  };
-
-  // Handle live audio streaming for Whisper
-  const handleLiveAudioStream = (audioBuffer: AudioBuffer) => {
-    setIsLiveRecordingActive(true);
-    transcriber.start(audioBuffer);
-  };
-  const [partialTranscripts, setPartialTranscripts] = useState<{ seq: number; text: string }[]>([]);
-  const seqRef = useRef(0); // sequence number for chunks
-  const [transcribedTextFromExternal, setTranscribedTextFromExternal] = useState("")
-  function audioBufferToWavBlob(audioBuffer: AudioBuffer): Blob {
-    const numChannels = audioBuffer.numberOfChannels;
-    const sampleRate = audioBuffer.sampleRate;
-    const samples = audioBuffer.length;
-    const bytesPerSample = 2;
-    const blockAlign = numChannels * bytesPerSample;
-    const buffer = new ArrayBuffer(44 + samples * blockAlign);
-    const view = new DataView(buffer);
-
-    // WAV header
-    writeString(view, 0, "RIFF");
-    view.setUint32(4, 36 + samples * blockAlign, true);
-    writeString(view, 8, "WAVE");
-    writeString(view, 12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * blockAlign, true);
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, bytesPerSample * 8, true);
-    writeString(view, 36, "data");
-    view.setUint32(40, samples * blockAlign, true);
-
-    // Write PCM samples
-    for (let ch = 0; ch < numChannels; ch++) {
-      const channelData = audioBuffer.getChannelData(ch);
-      let offset = 44 + ch * 2;
-      for (let i = 0; i < samples; i++) {
-        let sample = Math.max(-1, Math.min(1, channelData[i]));
-        sample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-        view.setInt16(offset, sample, true);
-        offset += blockAlign;
-      }
-    }
-
-    return new Blob([buffer], { type: "audio/wav" });
-  }
-
-  function writeString(view: DataView, offset: number, string: string) {
-    for (let i = 0; i < string.length; i++) {
-      view.setUint8(offset + i, string.charCodeAt(i));
-    }
-  }
-  const handleLiveAudioStreamForExternalAPI = async (audioBuffer: AudioBuffer) => {
-    const seq = seqRef.current++;
-    //setIsLiveRecordingActive(true);
-    const wavBlob = audioBufferToWavBlob(audioBuffer);
-    const form = new FormData();
-    form.append("file", wavBlob, `chunk-${seq}.wav`);
-    form.append("seq", String(seq));
-
-    try {
-      const token = await auth.currentUser?.getIdToken();
-      const res = await fetch("https://mesne-unlicentiously-allie.ngrok-free.dev/transcribe", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token}`
-        },
-        body: form,
-      });
-      const data = await res.json();
-
-      // append chunk text to state
-      setPartialTranscripts((prev) => {
-        const next = prev.filter((p) => p.seq !== seq).concat({ seq, text: data.text ?? "" });
-        next.sort((a, b) => a.seq - b.seq);
-        // console.log("partial transcjkk==",next)
-        setTranscribedTextFromExternal(next.map(p => p.text).join(" "));
-        return next;
-      });
-      // console.log("partial transcjkk==",partialTranscripts)
-    } catch (err) {
-      console.error("Chunk transcription error seq=", seq, err);
-    }
-  };
-  const processAudioBlobForExternalAPi = async () => {
-    if (partialTranscripts.length === 0) return;
-    setIsProcessing(true);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    // combine all chunk texts
-    /* console.log("the partial teanscript===",partialTranscripts)
-     const finalText = partialTranscripts[partialTranscripts.length - 1].text;*/
-
-
-
-    generateQuestions(transcribedTextFromExternal)
-
-
-    // Reset state for next recording
-    setPartialTranscripts([]);
-    setIsRecording(false);
-    setIsListening(false);
-    setShowExternalModal(false)
-    setShowGGMLRecordModel(false)
-  };
-
-
-
-
-
-
-
-  // Note: render guard is applied later after hooks to keep hook order stable
-
-  const toggleMemberNames = (pollQuestion: string) => {
-    setShowMemberNames(prev => ({
-      ...prev,
-      [pollQuestion]: prev[pollQuestion] === undefined ? false : !prev[pollQuestion]
-    }));
-  };
-
-  const endRoom = async () => {
-    //confirmation before proceeding
-    const confirmed = await showModal({
-      type: 'default',
-      title: 'are you sure you want to end this room?',
-      description: `This action cannot be undone.
-• All students will be disconnected
-• Active polls will be stopped
-• The room will be permanently closed`,
-      confirmText: 'End Room',
-    })
-
-    if (!confirmed) return;
-    setIsEndingRoom(true);
-    try {
-      await api.post(`/livequizzes/rooms/${roomCode}/end`, {
-        teacherId: currentUser?.uid,
-      });
-
-      toast.success("Room ended successfully");
-      navigate({ to: '/teacher/pollroom' });
-    } catch (error) {
-      // Error ending room
-      if (error && typeof error === 'object' && 'response' in error) {
-        const apiError = error as { response?: { data?: { message?: string } } };
-        toast.error(apiError.response?.data?.message || "Failed to end room");
-      } else {
-        toast.error("Failed to end room");
-      }
-    } finally {
-      setIsEndingRoom(false);
-      setShowEndRoomConfirm(false);
-    }
-  };
-
-  const createPoll = async () => {
-    try {
-      const response = await api.post(`/livequizzes/rooms/${roomCode}/polls`, {
-        question,
-        options: options.filter(opt => opt.trim()),
-        creatorId: currentUser?.uid,
-        // timer: Number(timer),
-        // creatorId: currentUser?.userId,
-        timer: Number(questionTimers[currentQuestionIndex]?.initialTime || timer || 30),
-        maxPoints: Number(maxPoints || 20),
-        correctOptionIndex
-      });
-
-      localStorage.setItem('livepollresults', JSON.stringify(response.data));
-
-      toast.success("Poll created!");
-      setQuestion("");
-      setOptions(["", "", "", ""]);
-      setCorrectOptionIndex(0);
-      setMaxPoints(20);
-      // setShowPreview(false);
-      fetchResults()
-    } catch (error) {
-      // Failed to create poll
-      toast.error("Failed to create poll");
-    }
-  };
-
-  const fetchResults = async () => {
-    try {
-      const res = await api.get(`/livequizzes/rooms/${roomCode}/polls/results`);
-      setPollResults(res.data);
-    } catch {
-      toast.error("Failed to fetch results");
-    }
-  };
-
-
-  useEffect(() => {
-    setIsTranscribing(!!transcriber.output?.isBusy);
-  }, [transcriber.output?.isBusy]);
-
-
-  const generateQuestions = useCallback(async (finalSpeechText?: string) => {
-    // console.log("generate question calling===****=",finalSpeechText)
-    /* if (transcriber.output?.isBusy || isRecording || isListening) {
-       return;
-     }*/
-    let currentTranscript
-    let textToUse
-    if (finalSpeechText) {
-      currentTranscript = finalSpeechText
-      textToUse = finalSpeechText
-    }
-    else {
-      currentTranscript = transcript || transcriber.output?.text || displayTranscript.trim();
-      textToUse = transcript || transcriber.output?.text || displayTranscript.trim();
-    }
-
-    // Get the current transcript value from the state
-
-    if (!currentTranscript) {
+  // ─── FIX: generateQuestions always receives text directly as param ───
+  const generateQuestions = useCallback(async (textToUse?: string) => {
+    // Resolve the text to use — param first, then state fallbacks
+    const finalText =
+      textToUse?.trim() ||
+      transcript?.trim() ||
+      transcriber.output?.text?.trim() ||
+      displayTranscript.trim();
+
+    if (!finalText) {
       toast.error("Please provide YouTube URL, upload file, or record audio");
       return;
     }
 
-    if (!textToUse) {
-      toast.error("No transcript available to generate questions from");
-      return;
-    }
     setIsGenerating(true);
     try {
-      const formData = new FormData();
-      formData.append('transcript', textToUse);
-      if (questionSpec) formData.append('questionSpec', questionSpec);
-      formData.append('model', selectedModel);
-      formData.append('questionCount', questionCount.toString()); // Question count
+      const payload = {
+        transcript: finalText,
+        questionSpec: questionSpec || undefined,
+        model: selectedModel,
+        questionCount: questionCount.toString(),
+      };
 
-      const response = await api.post<APIResponse>(`/livequizzes/rooms/${roomCode}/generate-questions`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-
+      const response = await api.post<APIResponse>(
+        `/livequizzes/rooms/${roomCode}/generate-questions`,
+        payload
+      );
+      console.log("📦 API RESPONSE:", response.data);
       const rawQuestions = response.data.questions || [];
-
       const cleanQuestions = rawQuestions
-        .filter((q) => typeof q.questionText === 'string' && q.questionText.trim() !== '')
-        .map((q): GeneratedQuestion => {
-          const options = Array.isArray(q.options) ? q.options.map((opt) => opt.text ?? '') : [];
-          const correctOptionIndex = Array.isArray(q.options) ? q.options.findIndex((opt) => opt.correct) : 0;
-
-          const validCorrectOptionIndex = correctOptionIndex >= 0 && correctOptionIndex < options.length
-            ? correctOptionIndex
-            : 0;
-
-          setLaunchedQuestions(new Set());
-
-          return {
-            question: q.questionText,
-            options: options,
-            correctOptionIndex: validCorrectOptionIndex,
-          };
+        .map((q) => {
+          const questionText = typeof q.questionText === 'string' ? q.questionText : typeof q.question === 'string' ? q.question : '';
+          return { q, questionText };
+        })
+        .filter(({ questionText }) => questionText.trim() !== '')
+        .map(({ q, questionText }): GeneratedQuestion => {
+          const opts = Array.isArray(q.options) ? q.options.map((opt) => opt.text ?? '') : [];
+          const correctIdx = Array.isArray(q.options) ? q.options.findIndex((opt) => opt.correct) : 0;
+          const validIdx = correctIdx >= 0 && correctIdx < opts.length ? correctIdx : 0;
+          return { question: questionText, options: opts, correctOptionIndex: validIdx };
         });
 
       if (cleanQuestions.length <= 0) {
-        toast.error("No questions generated")
-        return
+        toast.error("No questions generated");
+        return;
       }
+
       const filteredQuestions = cleanQuestions.map((q: GeneratedQuestion) => filterQuestionOptions(q));
+      setLaunchedQuestions(new Set());
       setGeneratedQuestions(filteredQuestions);
       setShowPreview(true);
       toast.success(`Generated ${filteredQuestions.length} questions successfully!`);
     } catch (error) {
-      // Error generating questions
       if (error && typeof error === 'object' && 'response' in error) {
         const apiError = error as { response?: { data?: { message?: string } } };
         toast.error(apiError.response?.data?.message || "Failed to generate questions");
@@ -1478,16 +789,12 @@ export default function TeacherPollRoom() {
       }
     } finally {
       setIsGenerating(false);
-      setIsProcessing(false)
+      setIsProcessing(false);
     }
   }, [
     transcript,
-    transcriber.output?.isBusy,
     transcriber.output?.text,
     displayTranscript,
-    isRecording,
-    isListening,
-    setIsGenerating,
     filterQuestionOptions,
     questionCount,
     questionSpec,
@@ -1495,72 +802,39 @@ export default function TeacherPollRoom() {
     selectedModel,
   ]);
 
-
-  // Common function to process content (text from file or paste)
-  // Add this new state to track when we want to generate questions
-  const [shouldGenerate, setShouldGenerate] = useState(false);
-
+  // ─── FIX: processContent passes text directly — no stale state via shouldGenerate ───
   const processContent = useCallback(async (content: string) => {
     if (!content.trim()) {
       toast.error('No content provided to generate questions');
       return;
     }
+    setIsProcessing(true);
     try {
-      // console.log('processContent: Setting transcript and shouldGenerate');
-      setTranscript(content);
-      setShouldGenerate(true);
-      // Don't set isProcessing to false here - let the useEffect handle it
+      setTranscript(content); // keep in sync for display
+      await generateQuestions(content); // pass directly to avoid stale state
     } catch (error) {
-      // Error in processContent
       toast.error('Failed to process content');
+    } finally {
+      setIsProcessing(false);
     }
-  }, []);
+  }, [generateQuestions]);
 
-  // Add this useEffect to handle the generation after state updates
-  useEffect(() => {
-    const generate = async () => {
-      if (shouldGenerate && transcript) {
-        // console.log('useEffect: Starting question generation');
-        setShouldGenerate(false); // Reset the flag first
-        try {
-          await generateQuestions();
-        } catch (error) {
-          // Error generating questions
-          toast.error('Failed to generate questions');
-        } finally {
-          // console.log('useEffect: Setting isProcessing to false');
-          setIsProcessing(false);
-        }
-      }
-    };
-
-    generate();
-  }, [shouldGenerate, transcript, generateQuestions]);
-
-  // Handle text file selection
   const handleTextFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-
-    // Check if file is a text file
     if (!file.name.endsWith('.txt')) {
       toast.error('Please upload a .txt file');
       return;
     }
-
     setFileName(file.name);
-    setIsGenerateClicked(false); // Reset generate clicked state when new file is selected
-
+    setIsGenerateClicked(false);
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
         const content = e.target?.result as string;
-        if (!content || !content.trim()) {
-          throw new Error('File is empty');
-        }
+        if (!content || !content.trim()) throw new Error('File is empty');
         setTextFileContent(content);
       } catch (error) {
-        // Error reading file
         toast.error('Failed to read the file');
         setFileName('');
         setTextFileContent('');
@@ -1571,176 +845,97 @@ export default function TeacherPollRoom() {
       setFileName('');
       setTextFileContent('');
     };
-
     try {
       reader.readAsText(file);
     } catch (error) {
-      // Error reading file
       toast.error('Failed to process the file');
       setFileName('');
       setTextFileContent('');
     }
-
-    // Reset the file input
     event.target.value = '';
   };
 
-  // Handle text file content submission
+  // ─── FIX: don't double-call setIsProcessing(false) — processContent handles it ───
   const handleTextFileSubmit = async () => {
     if (!textFileContent || !textFileContent.trim()) {
       toast.error('The file is empty or not loaded yet');
       return;
     }
-
-    // console.log('Setting isProcessing to true');
-    setIsProcessing(true);
-
-
     try {
-      // console.log('Calling processContent');
       await processContent(textFileContent);
-
-
-      // Reset states after successful processing
       setTextFileContent('');
       setFileName('');
     } catch (error) {
-      // Error processing file content
       toast.error('Failed to process file content');
-      setIsProcessing(false); // Only set to false on error
     } finally {
       setShowUploadTextFileModal(false);
     }
   };
 
-  // Handle paste content submission
+  // ─── FIX: don't double-call setIsProcessing(false) — processContent handles it ───
   const handlePasteSubmit = async () => {
     if (!pastedContent || !pastedContent.trim()) {
       toast.error('The paste content is empty or not loaded yet');
       return;
     }
-
-    setIsProcessing(true);
-
-
     try {
       await processContent(pastedContent);
       setPastedContent('');
     } catch (error) {
-      // Error processing paste content
       toast.error('Failed to process paste content');
-      setIsProcessing(false); // Only set to false on error
     } finally {
       setShowPasteModal(false);
     }
   };
+
   const [hasGeneratedQuestions, setHasGeneratedQuestions] = useState(false);
   const [isTranscriptionComplete, setIsTranscriptionComplete] = useState(false);
   const [shouldProcessTranscript, setShouldProcessTranscript] = useState(false);
-  const [whisperAiText, setWhisperAiText] = useState('')
+  const [whisperAiText, setWhisperAiText] = useState('');
+
   useEffect(() => {
-
-
     const text = transcriber.output?.text;
     const isComplete = !transcriber.output?.isBusy;
-
     if (text && isComplete && shouldProcessTranscript && !isLiveRecordingActive) {
       setShouldProcessTranscript(false);
+      setTranscript(text);
+      toast.success("Transcribed successfully");
+      setIsProcessing(true);
+      setHasGeneratedQuestions(true);
+      void generateQuestions(text);
+      setWhisperAiText(text);
     }
-  }, [transcriber.output, shouldProcessTranscript]);
+  }, [transcriber.output, shouldProcessTranscript, isLiveRecordingActive, generateQuestions]);
 
-
+  // ─── FIX: pass text directly; reduced timeout from 5000ms to 500ms ───
   useEffect(() => {
     const text = transcriber.output?.text;
     const isComplete = !transcriber.output?.isBusy;
 
-    // 1️⃣ Final transcription completed
     if (text && isComplete && !isLiveRecordingActive && !hasGeneratedQuestions) {
       setTranscript(text);
       toast.success("Transcribed successfully");
       setIsProcessing(true);
-
-      // Capture the final text in a local variable
       const finalText = text;
-
-      setTimeout(() => {
-        generateQuestions(whisperAiText);
-      }, 5000); // 5 seconds delay
-
-      setHasGeneratedQuestions(true); // prevent multiple calls
-      setWhisperAiText(finalText); // set final text
+      setTimeout(() => { generateQuestions(finalText); }, 500);
+      setHasGeneratedQuestions(true);
+      setWhisperAiText(finalText);
     }
 
-    // 2️⃣ Live transcription updates
     if (isLiveRecordingActive && text) {
-      setWhisperAiText(prev => prev + text); // append partial text
-      setHasGeneratedQuestions(false); // allow next final transcription
+      setWhisperAiText(prev => prev + text);
+      setHasGeneratedQuestions(false);
     }
+  }, [transcriber.output, isLiveRecordingActive, hasGeneratedQuestions, isTranscriptionComplete, generateQuestions]);
 
-    // 3️⃣ Optional: reset whisperAiText when transcription marked complete
-    if (isTranscriptionComplete) {
-      //console.log("Transcription done ===", text);
-      // setWhisperAiText(text || '');
-    }
-  }, [transcriber.output, isLiveRecordingActive, hasGeneratedQuestions, isTranscriptionComplete]);
-
-
-
-
-
-  /* useEffect(() => {
-     const text = transcriber.output?.text;
-     const isComplete = !transcriber.output?.isBusy;
-     if (text && isComplete && !isLiveRecordingActive) {
-       setTranscript(text);
-       console.log("the trenacribe text coming more times====",text)
-       generateQuestions()
-       toast.success("Transcribed successfully");
-     }
-     // In live mode, show partial transcripts as they come
-     if (text && isLiveRecordingActive && transcriber.isLiveMode) {
-     }
-   }, [transcriber.output, isLiveRecordingActive, transcriber.isLiveMode]);*/
-
-  /*const hasGeneratedRef = useRef(false);
-
+  // ─── FIX: pass text directly when Whisper finishes ───
   useEffect(() => {
     const text = transcriber.output?.text;
     const isComplete = !transcriber.output?.isBusy;
-  
-    if (
-      text &&
-      isComplete &&
-      !isLiveRecordingActive &&
-      !hasGeneratedRef.current
-    ) {
-      hasGeneratedRef.current = true; // prevent second call
-      setTranscript(text);
-      generateQuestions();
-      toast.success("Transcribed successfully");
-    }
-  
-    // Live updates (unchanged)
-    if (text && isLiveRecordingActive && transcriber.isLiveMode) {
-    }
-  }, [
-    transcriber.output?.isBusy,
-    transcriber.output?.text,
-    isLiveRecordingActive,
-    transcriber.isLiveMode,
-  ]);
-  */
-
-  useEffect(() => {
-    const text = transcriber.output?.text;
-    const isComplete = !transcriber.output?.isBusy;
-
     if (isGenerateClicked && text && isComplete) {
       setTranscript(text);
-      console.log("the second effect running====")
       toast.success("Transcribed successfully");
-      setIsGenerating(true);
-      generateQuestions();
+      generateQuestions(text); // pass directly — no stale state
       setIsGenerateClicked(false);
     }
   }, [transcriber.output?.isBusy, transcriber.output?.text, isGenerateClicked, generateQuestions]);
@@ -1753,14 +948,12 @@ export default function TeacherPollRoom() {
 
   const ModelSelector: React.FC<ModelSelectorProps> = ({ selectedModel, onModelChange, className = "" }) => {
     const [isOpen, setIsOpen] = useState(false);
-
     const models = [
-      { value: "gemma3", label: "Gemma 3" },
-      { value: "gpt-4", label: "GPT-4" },
-      { value: "claude-3", label: "Claude 3" },
-      { value: "deepseek-r1:70b", label: "DeepSeek R1 (70B)" }
+      { value: "gpt-3.5-turbo", label: "GPT-3.5 Turbo (OpenAI) ✓" },
+      { value: "gpt-4", label: "GPT-4 (OpenAI)" },
+      { value: "gemini-1.5-flash", label: "Gemini 1.5 Flash (Google) ✓" },
+      { value: "deepseek-r1:70b", label: "DeepSeek R1 70B (needs Ollama)" },
     ];
-
     const selectedModelLabel = models.find(model => model.value === selectedModel)?.label || "Select Model";
 
     return (
@@ -1772,36 +965,21 @@ export default function TeacherPollRoom() {
           aria-label="AI Model"
         >
           <span className="text-left truncate">{selectedModelLabel}</span>
-          <ChevronDown
-            size={16}
-            className={`ml-2 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
-          />
+          <ChevronDown size={16} className={`ml-2 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
         </button>
-
         {isOpen && (
           <>
-            {/* Backdrop */}
-            <div
-              className="fixed inset-0 z-10"
-              onClick={() => setIsOpen(false)}
-            />
-
-            {/* Dropdown */}
+            <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
             <div className="absolute z-20 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-lg max-h-60 overflow-auto">
               {models.map((model) => (
                 <button
                   key={model.value}
                   type="button"
-                  onClick={() => {
-                    onModelChange(model.value);
-                    setIsOpen(false);
-                  }}
+                  onClick={() => { onModelChange(model.value); setIsOpen(false); }}
                   className="w-full px-3 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-700 focus:bg-gray-100 dark:focus:bg-gray-700 focus:outline-none text-xs sm:text-base flex items-center justify-between"
                 >
                   <span>{model.label}</span>
-                  {selectedModel === model.value && (
-                    <Check size={16} className="text-purple-600 dark:text-purple-400" />
-                  )}
+                  {selectedModel === model.value && <Check size={16} className="text-purple-600 dark:text-purple-400" />}
                 </button>
               ))}
             </div>
@@ -1811,25 +989,31 @@ export default function TeacherPollRoom() {
     );
   };
 
+  // ─── FIX: build text locally and pass directly; don't rely on stale state ───
   const handleGenerateClick = () => {
-    setIsGenerateClicked(true);
-
-    if (!transcriber.output?.isBusy && (!isRecording || !isListening)) {
-      if (transcriber.output?.text) {
-        const finalText = transcriber.output?.text || transcript;
-        setTranscript(finalText);
-      }
-      generateQuestions();
-      setIsGenerateClicked(false);
+    // If Whisper is still transcribing, set flag and wait for the effect to fire
+    if (transcriber.output?.isBusy) {
+      setIsGenerateClicked(true);
+      return;
     }
+
+    const textToUse =
+      transcribedTextFromExternal.trim() ||
+      transcriber.output?.text?.trim() ||
+      transcript?.trim() ||
+      displayTranscript.trim();
+
+    if (!textToUse) {
+      toast.error("No transcript yet — record audio or paste content first");
+      return;
+    }
+
+    setTranscript(textToUse);       // keep state in sync for display
+    generateQuestions(textToUse);   // pass directly
   };
 
-  // Implementation is handled by the useCallback version above
-
   const selectGeneratedQuestion = useCallback((questionData: GeneratedQuestion) => {
-    // Filter the question to ensure it has exactly 4 options
     const filteredQuestion = filterQuestionOptions(questionData);
-
     setQuestion(filteredQuestion.question);
     setOptions(filteredQuestion.options);
     setCorrectOptionIndex(filteredQuestion.correctOptionIndex);
@@ -1852,37 +1036,278 @@ export default function TeacherPollRoom() {
     setFrequencyData([]);
     setUseWhisper(false);
     setShowRecordModal(false);
-    setShowGGMLRecordModel(false)
-    setShowExternalModal(false)
+    setShowGGMLRecordModel(false);
+    setShowExternalModal(false);
     setAudioBlob(undefined);
     setIsProcessing(false);
 
     if (mediaRecorderRef.current) {
       mediaRecorderRef.current.stop();
-      mediaRecorderRef.current.stream
-        .getTracks().forEach((track) => track.stop());
+      mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
     }
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-    }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-    }
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-    }
+    if (recognitionRef.current) { recognitionRef.current.stop(); }
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') { audioContextRef.current.close(); }
+    if (animationFrameRef.current) { cancelAnimationFrame(animationFrameRef.current); }
+
     setAudioManagerKey(Date.now());
-    // reset auto-generation buffers
     processedWordsRef.current = 0;
     pendingTextChunksRef.current = [];
     queuedGeneratedQuestionsRef.current = [];
     setQueuedGeneratedQuestions([]);
     bufferTextRef.current = "";
-
     toast.success("Cleared all data");
   };
+  // ─────────────────────────────────────────────────────────────────────────────
+// PATCH for TeacherPollRoom.tsx — replace the handleRecordingToggle useCallback
+//
+// ROOT CAUSE of the cascading 500 errors:
+//   1. recording/start returned 500 (room lookup failed in service)
+//   2. The catch block in handleRecordingToggle called recording/stop anyway
+//   3. That also 500'd because there was no lock to release
+//
+// FIXES applied here:
+//   • lockAcquired flag — stop is only called if start truly succeeded
+//   • Body guards — never send undefined userId to the API
+//   • stop is NOT called in the catch when start already failed
+// ─────────────────────────────────────────────────────────────────────────────
 
-  // Reset queue buffers when starting/stopping recording
+const handleRecordingToggle = useCallback(async (isFromOnEnd?: boolean) => {
+  if (isMicMutedByHost) {
+    toast.error("Host has muted your microphone");
+    return;
+  }
+
+  // ── STOP BRANCH ──────────────────────────────────────────────────────────
+  if (isRecording || isFromOnEnd) {
+    setIsRecording(false);
+    setIsListening(false);
+    setIsLiveRecordingActive(false);
+
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+    }
+    if (recognitionRef.current) recognitionRef.current.stop();
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      audioContextRef.current.close();
+    }
+    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+
+    // Only release lock if we have a valid userId
+    if (currentUser?.uid) {
+      try {
+        const stopResult = await api.post(
+          `/livequizzes/rooms/${roomCode}/recording/stop`,
+          { userId: currentUser.uid }
+        );
+        if (!stopResult.data.success) {
+          console.warn('⚠️ Stop lock returned failure:', stopResult.data.message);
+        }
+      } catch (error) {
+        console.error("Error releasing recording lock:", error);
+      }
+    }
+
+    setIsProcessing(true);
+    try {
+      const textBuffer = (useWhisper || useWhisperGGML)
+        ? (transcriber.accumulatedChunks ?? []).map(c => c.text).join(" ").trim()
+        : displayTranscript.trim();
+      bufferTextRef.current = textBuffer;
+
+      const words = textBuffer ? textBuffer.split(/\s+/).filter(Boolean) : [];
+      const remaining = words.length - processedWordsRef.current;
+      if (remaining > 0) {
+        const remainderText = words
+          .slice(processedWordsRef.current, processedWordsRef.current + remaining)
+          .join(" ");
+        processedWordsRef.current += remaining;
+        enqueueTextChunk(remainderText);
+      }
+
+      while (processingQueueRef.current || pendingTextChunksRef.current.length > 0) {
+        await new Promise(r => setTimeout(r, 200));
+      }
+
+      if (queuedGeneratedQuestionsRef.current.length > 0) {
+        const queued = queuedGeneratedQuestionsRef.current;
+        setGeneratedQuestions(prev => [...prev, ...queued]);
+        setShowPreview(true);
+        queuedGeneratedQuestionsRef.current = [];
+        setQueuedGeneratedQuestions([]);
+        toast.success("Generated questions are ready");
+      }
+    } catch (err) {
+      console.error("Error finalizing recording:", err);
+    } finally {
+      setIsProcessing(false);
+    }
+    return; // ← explicit return so we don't fall into the START branch
+  }
+
+  // ── START BRANCH ──────────────────────────────────────────────────────────
+  // Guard: another user holds the lock
+  if (isMicLockedByOtherUser) {
+    toast.error(
+      `${recordingLockStatus.currentRecorder?.userName || "Another user"} is already using the mic`
+    );
+    return;
+  }
+
+  // Guard: need a valid user to acquire lock
+  if (!currentUser?.uid) {
+    toast.error("You must be logged in to start recording");
+    return;
+  }
+
+  let lockAcquired = false; // ← track whether start succeeded
+
+  try {
+    // Step 1: Acquire server-side recording lock
+    const lockResponse = await api.post(
+      `/livequizzes/rooms/${roomCode}/recording/start`,
+      {
+        userId: currentUser.uid,
+        userName:
+          currentUser?.firstName ||
+          currentUser?.name ||
+          currentUser?.email ||
+          "Teacher",
+      }
+    );
+
+    if (!lockResponse.data.success) {
+      toast.error(lockResponse.data.message || "Could not acquire recording lock");
+      return; // ← bail out without touching media devices
+    }
+
+    lockAcquired = true; // ← only set after confirmed success
+
+    // Step 2: Open media / transcriber
+    if (useWhisper) {
+      setShowRecordModal(true);
+    } else if (useWhisperGGML) {
+      setShowGGMLRecordModel(true);
+    } else if (useExternalApi) {
+      setShowExternalModal(true);
+    } else {
+      // Native browser speech recognition + MediaRecorder
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioContextRef.current = new AudioContext();
+      const source = audioContextRef.current.createMediaStreamSource(stream);
+      analyserRef.current = audioContextRef.current.createAnalyser();
+      analyserRef.current.fftSize = 256;
+      source.connect(analyserRef.current);
+      updateAudioLevel();
+      mediaRecorderRef.current = new MediaRecorder(stream);
+      mediaRecorderRef.current.start();
+      if (recognitionRef.current) recognitionRef.current.start();
+      setIsRecording(true);
+      setIsListening(true);
+      setInterimTranscript("");
+    }
+  } catch (error) {
+    console.error("Error starting recording:", error);
+    toast.error("Failed to access microphone. Please check browser permissions.");
+
+    // ── KEY FIX: only release lock if it was actually acquired ──────────
+    if (lockAcquired && currentUser?.uid) {
+      try {
+        await api.post(`/livequizzes/rooms/${roomCode}/recording/stop`, {
+          userId: currentUser.uid,
+        });
+      } catch (releaseError) {
+        console.error("Error releasing lock after failed mic open:", releaseError);
+      }
+    }
+    // If lockAcquired is false, don't call stop at all — there's nothing to release
+  }
+}, [
+  isRecording,
+  setIsRecording,
+  setIsListening,
+  setIsLiveRecordingActive,
+  useWhisper,
+  useWhisperGGML,
+  useExternalApi,
+  transcriber.accumulatedChunks,
+  displayTranscript,
+  enqueueTextChunk,
+  generatedQuestions.length,
+  setGeneratedQuestions,
+  setShowPreview,
+  setQueuedGeneratedQuestions,
+  updateAudioLevel,
+  setInterimTranscript,
+  roomCode,
+  recordingLockStatus,
+  isMicMutedByHost,
+  isMicLockedByOtherUser,
+  currentUser?.uid,
+  currentUser?.name,
+  currentUser?.firstName,
+]);
+
+
+  useEffect(() => {
+    if (!isRecording && !isLiveRecordingActive) {
+      lastGenerationTimeRef.current = Date.now();
+      return;
+    }
+
+    const intervalId = setInterval(() => {
+      const now = Date.now();
+      const elapsedSeconds = (now - lastGenerationTimeRef.current) / 1000;
+      if (elapsedSeconds >= autoGenInterval) {
+        const textBuffer = bufferTextRef.current;
+        const words = textBuffer ? textBuffer.split(/\s+/).filter(Boolean) : [];
+        const remainingCount = words.length - processedWordsRef.current;
+        if (remainingCount > 0) {
+          const chunkWords = words.slice(processedWordsRef.current, processedWordsRef.current + remainingCount).join(" ");
+          processedWordsRef.current += remainingCount;
+          enqueueTextChunk(chunkWords);
+        }
+        lastGenerationTimeRef.current = now;
+      }
+    }, 1000);
+
+    return () => clearInterval(intervalId);
+  }, [isRecording, isLiveRecordingActive, autoGenInterval, enqueueTextChunk]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && "webkitSpeechRecognition" in window) {
+      const recognition = new window.webkitSpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = language;
+
+      recognition.onstart = () => { setIsListening(true); };
+      recognition.onresult = (event: any) => {
+        let interim = "";
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i];
+          if (result.isFinal) {
+            setLiveTranscript((prev) => prev + " " + result[0].transcript);
+          } else {
+            interim += result[0].transcript;
+          }
+        }
+        setInterimTranscript(interim);
+      };
+      recognition.onend = () => {
+        const IS_FROM_ONEND = true;
+        handleRecordingToggle(IS_FROM_ONEND);
+      };
+      recognition.onerror = (_event: any) => { };
+      recognitionRef.current = recognition;
+    } else {
+      toast.error("Web Speech API is not supported in this browser.");
+    }
+    return () => {
+      if (animationFrameRef.current) { cancelAnimationFrame(animationFrameRef.current); }
+    };
+  }, [language, handleRecordingToggle]);
+
   useEffect(() => {
     if (isRecording || isLiveRecordingActive) {
       processedWordsRef.current = 0;
@@ -1892,49 +1317,237 @@ export default function TeacherPollRoom() {
     }
   }, [isRecording, isLiveRecordingActive]);
 
-  /* // Commented out old word-checkpoint logic
   useEffect(() => {
-    if (!useWhisper && !useWhisperGGML) return;
-    // Build buffer text from accumulated chunks
-    const text = (transcriber.accumulatedChunks ?? []).map((c) => c.text).join(" ").trim();
-    bufferTextRef.current = text;
-    const words = text ? text.split(/\s+/).filter(Boolean) : [];
-    while (words.length - processedWordsRef.current >= 100) {
-      const chunkWords = words.slice(processedWordsRef.current, processedWordsRef.current + 100).join(" ");
-      processedWordsRef.current += 100;
-      enqueueTextChunk(chunkWords);
-    }
-  }, [transcriber.accumulatedChunks, useWhisper, useWhisperGGML, enqueueTextChunk]);
+    const pollRecordingStatus = async () => {
+      try {
+        if (!roomCode) return;
+        const response = await api.get(`/livequizzes/rooms/${roomCode}/recording/status`);
+        setRecordingLockStatus(response.data);
+      } catch (error) {
+        console.error("Error polling recording status:", error);
+      }
+    };
 
-  // Watch non-Whisper live transcript (Web Speech API) and enqueue 100-word checkpoints
-  useEffect(() => {
-    if (useWhisper || useWhisperGGML) return;
-    const text = displayTranscript.trim();
-    bufferTextRef.current = text;
-    const words = text ? text.split(/\s+/).filter(Boolean) : [];
-    while (words.length - processedWordsRef.current >= 100) {
-      const chunkWords = words.slice(processedWordsRef.current, processedWordsRef.current + 100).join(" ");
-      processedWordsRef.current += 100;
-      enqueueTextChunk(chunkWords);
+    pollRecordingStatus();
+    recordingLockPollIntervalRef.current = setInterval(pollRecordingStatus, 2000);
+
+    socket.on('recording-started', (data: any) => {
+      setRecordingLockStatus({ isLocked: true, currentRecorder: data });
+    });
+    socket.on('recording-stopped', () => {
+      setRecordingLockStatus({ isLocked: false });
+    });
+
+    return () => {
+      if (recordingLockPollIntervalRef.current) {
+        clearInterval(recordingLockPollIntervalRef.current);
+      }
+      socket.off('recording-started');
+      socket.off('recording-stopped');
+    };
+  }, [roomCode]);
+
+  const handleAudioFromRecording = async (data: Blob) => {
+    if (!data) return;
+    setAudioBlob(data);
+    setIsTranscriptionComplete(true);
+    // Recording is complete, clear live recording flag so auto-generation can trigger
+    setIsLiveRecordingActive(false);
+  };
+
+  const processAudioBlob = async () => {
+    if (!audioBlob) return;
+    setIsProcessing(true);
+    setIsRecording(false);
+    setIsListening(false);
+    setShowRecordModal(false);
+    setShowExternalModal(false);
+    setShowGGMLRecordModel(false);
+  };
+
+  const handleLiveAudioStream = (audioBuffer: AudioBuffer) => {
+    setIsLiveRecordingActive(true);
+    transcriber.start(audioBuffer);
+  };
+
+  const [partialTranscripts, setPartialTranscripts] = useState<{ seq: number; text: string }[]>([]);
+  const seqRef = useRef(0);
+  const [transcribedTextFromExternal, setTranscribedTextFromExternal] = useState("");
+
+  function audioBufferToWavBlob(audioBuffer: AudioBuffer): Blob {
+    const numChannels = audioBuffer.numberOfChannels;
+    const sampleRate = audioBuffer.sampleRate;
+    const samples = audioBuffer.length;
+    const bytesPerSample = 2;
+    const blockAlign = numChannels * bytesPerSample;
+    const buffer = new ArrayBuffer(44 + samples * blockAlign);
+    const view = new DataView(buffer);
+
+    writeString(view, 0, "RIFF");
+    view.setUint32(4, 36 + samples * blockAlign, true);
+    writeString(view, 8, "WAVE");
+    writeString(view, 12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bytesPerSample * 8, true);
+    writeString(view, 36, "data");
+    view.setUint32(40, samples * blockAlign, true);
+
+    for (let ch = 0; ch < numChannels; ch++) {
+      const channelData = audioBuffer.getChannelData(ch);
+      let offset = 44 + ch * 2;
+      for (let i = 0; i < samples; i++) {
+        let sample = Math.max(-1, Math.min(1, channelData[i]));
+        sample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+        view.setInt16(offset, sample, true);
+        offset += blockAlign;
+      }
     }
-  }, [displayTranscript, useWhisper, useWhisperGGML, enqueueTextChunk]);
-  */
+    return new Blob([buffer], { type: "audio/wav" });
+  }
+
+  function writeString(view: DataView, offset: number, string: string) {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  }
+
+  const handleLiveAudioStreamForExternalAPI = async (audioBuffer: AudioBuffer) => {
+    const seq = seqRef.current++;
+    const wavBlob = audioBufferToWavBlob(audioBuffer);
+    const form = new FormData();
+    form.append("file", wavBlob, `chunk-${seq}.wav`);
+    form.append("seq", String(seq));
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch("https://mesne-unlicentiously-allie.ngrok-free.dev/transcribe", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` },
+        body: form,
+      });
+      const data = await res.json();
+      setPartialTranscripts((prev) => {
+        const next = prev.filter((p) => p.seq !== seq).concat({ seq, text: data.text ?? "" });
+        next.sort((a, b) => a.seq - b.seq);
+        setTranscribedTextFromExternal(next.map(p => p.text).join(" "));
+        return next;
+      });
+    } catch (err) {
+      console.error("Chunk transcription error seq=", seq, err);
+    }
+  };
+
+  // ─── FIX: already passes text directly — correct ───
+  const processAudioBlobForExternalAPi = async () => {
+    if (partialTranscripts.length === 0) return;
+    setIsProcessing(true);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    generateQuestions(transcribedTextFromExternal);
+    setPartialTranscripts([]);
+    setIsRecording(false);
+    setIsListening(false);
+    setShowExternalModal(false);
+    setShowGGMLRecordModel(false);
+  };
+
+  const toggleMemberNames = (pollQuestion: string) => {
+    setShowMemberNames(prev => ({
+      ...prev,
+      [pollQuestion]: prev[pollQuestion] === undefined ? false : !prev[pollQuestion]
+    }));
+  };
+
+  const endRoom = async () => {
+    const confirmed = await showModal({
+      type: 'default',
+      title: 'are you sure you want to end this room?',
+      description: `This action cannot be undone.\n• All students will be disconnected\n• Active polls will be stopped\n• The room will be permanently closed`,
+      confirmText: 'End Room',
+    });
+    if (!confirmed) return;
+    setIsEndingRoom(true);
+    try {
+      await api.post(`/livequizzes/rooms/${roomCode}/end`, { teacherId: currentUser?.uid });
+      toast.success("Room ended successfully");
+      navigate({ to: '/teacher/pollroom' });
+    } catch (error) {
+      if (error && typeof error === 'object' && 'response' in error) {
+        const apiError = error as { response?: { data?: { message?: string } } };
+        toast.error(apiError.response?.data?.message || "Failed to end room");
+      } else {
+        toast.error("Failed to end room");
+      }
+    } finally {
+      setIsEndingRoom(false);
+      setShowEndRoomConfirm(false);
+    }
+  };
+
+  const createPoll = async () => {
+    try {
+      const response = await api.post(`/livequizzes/rooms/${roomCode}/polls`, {
+        question,
+        options: options.filter(opt => opt.trim()),
+        creatorId: currentUser?.uid,
+        timer: Number(questionTimers[currentQuestionIndex]?.initialTime || timer || 30),
+        maxPoints: Number(maxPoints || 20),
+        correctOptionIndex
+      });
+      localStorage.setItem('livepollresults', JSON.stringify(response.data));
+      toast.success("Poll created!");
+      setQuestion("");
+      setOptions(["", "", "", ""]);
+      setCorrectOptionIndex(0);
+      setMaxPoints(20);
+      fetchResults();
+    } catch (error: any) {
+      console.error("Full poll error:", error?.response?.data);
+      let errorMsg = "Failed to create poll";
+      
+      if (error?.response?.data?.errors && Array.isArray(error.response.data.errors)) {
+        const validationErrors = error.response.data.errors.map((e: any) => e.constraints ? Object.values(e.constraints).join(", ") : e.message).join("; ");
+        errorMsg = validationErrors || error?.response?.data?.message || errorMsg;
+      } else if (error?.response?.data?.message) {
+        errorMsg = error.response.data.message;
+      }
+      
+      console.error("Poll creation error:", errorMsg);
+      toast.error(errorMsg);
+    }
+  };
+
+  const fetchResults = async () => {
+    try {
+      const res = await api.get(`/livequizzes/rooms/${roomCode}/polls/results`);
+      setPollResults(res.data);
+    } catch {
+      toast.error("Failed to fetch results");
+    }
+  };
+
+  useEffect(() => {
+    setIsTranscribing(!!transcriber.output?.isBusy);
+  }, [transcriber.output?.isBusy]);
 
   const handleGeneratedQuestionClick = () => {
     setShowPreview(true);
     setShowPollModal(false);
     setShowResultsModal(false);
-  }
+  };
 
   const handleCreateManualPoll = () => {
     setShowPollModal(true);
-    setShowPreview(false)
+    setShowPreview(false);
     setShowResultsModal(false);
   };
 
   const handlePollResultsbutton = () => {
     setShowResultsModal(true);
-    setShowPreview(false)
+    setShowPreview(false);
     setShowPollModal(false);
   };
 
@@ -1947,118 +1560,67 @@ export default function TeacherPollRoom() {
   const [launchedQuestions, setLaunchedQuestions] = useState<Set<number>>(new Set());
   const [readyToCreatePoll, setReadyToCreatePoll] = useState(false);
   const [isPollActive, setIsPollActive] = useState(false);
-  // Track timers per question
   const [questionTimers, setQuestionTimers] = useState<Record<number, {
     timeLeft: number;
     isActive: boolean;
-    initialTime: number | ''; // Store initial time for each question
-    isLaunched: boolean; // Mark as launched to disable edit
+    initialTime: number | '';
+    isLaunched: boolean;
   }>>({});
   const [currentPollResponses, setCurrentPollResponses] = useState(0);
-  const timerRefs = useRef<Record<number, NodeJS.Timeout>>({});
+  const timerRefs = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => {
     if (readyToCreatePoll) {
-
       createPoll();
-      setReadyToCreatePoll(false); // Reset the flag
+      setReadyToCreatePoll(false);
     }
   }, [readyToCreatePoll, question, options, correctOptionIndex]);
 
-  // Clean up timers on unmount and when all questions are completed
   useEffect(() => {
-    return () => {
-      // Clear all timers when component unmounts
-      Object.values(timerRefs.current).forEach(clearInterval);
-    };
+    return () => { Object.values(timerRefs.current).forEach(clearInterval); };
   }, []);
 
-  // No need to clear timers when switching questions
-  // Timers will continue running in the background
-
   const startTimer = (questionIndex: number, duration: number) => {
-    // Don't restart timer if it's already running
     if (questionTimers[questionIndex]?.isActive) return;
+    if (timerRefs.current[questionIndex]) { clearInterval(timerRefs.current[questionIndex]); }
 
-    // Clear any existing timer for this question
-    if (timerRefs.current[questionIndex]) {
-      clearInterval(timerRefs.current[questionIndex]);
-    }
-
-    // Initialize timer state for this question if it doesn't exist
     setQuestionTimers(prev => ({
       ...prev,
-      [questionIndex]: {
-        timeLeft: duration,
-        isActive: true,
-        initialTime: duration, // Store the initial time
-        isLaunched: true       // Mark as launched to disable edit
-      }
+      [questionIndex]: { timeLeft: duration, isActive: true, initialTime: duration, isLaunched: true }
     }));
 
-    // Start the countdown
     timerRefs.current[questionIndex] = setInterval(() => {
       setQuestionTimers(prev => {
         const currentTime = prev[questionIndex]?.timeLeft || 0;
-
         if (currentTime <= 1) {
-          // Timer finished
           clearInterval(timerRefs.current[questionIndex]);
-          return {
-            ...prev,
-            [questionIndex]: {
-              timeLeft: 0,
-              isActive: false,
-              initialTime: 0, // Set to 0 when timer completes
-              isLaunched: true
-            }
-          };
+          return { ...prev, [questionIndex]: { timeLeft: 0, isActive: false, initialTime: 0, isLaunched: true } };
         }
-
-        // Decrement timer
-        return {
-          ...prev,
-          [questionIndex]: {
-            ...prev[questionIndex],
-            timeLeft: currentTime - 1
-          }
-        };
+        return { ...prev, [questionIndex]: { ...prev[questionIndex], timeLeft: currentTime - 1 } };
       });
     }, 1000);
   };
-  const handleRemoveStudent = async(studentEmail: string) => {
 
+  const handleRemoveStudent = async (studentEmail: string) => {
     if (!studentEmail) return;
-
-    //confirmation before proceeding
     const confirmed = await showModal({
       type: 'default',
       title: 'are you sure you want to remove this student?',
-      description: `This action cannot be undone.
-      The student will be immediately disconnected from the room`,
+      description: `This action cannot be undone.\n      The student will be immediately disconnected from the room`,
       confirmText: 'Remove Student',
-    })
-
-    if (!confirmed) return;
-
-    socket.emit("remove-student", {
-      roomCode,
-      email: studentEmail,
     });
-
+    if (!confirmed) return;
+    socket.emit("remove-student", { roomCode, email: studentEmail });
   };
 
   const handleControlModeChange = async (newMode: 'full' | 'mic-disabled' | 'poll-disabled') => {
     setRoomControlMode(newMode);
-
     try {
-      // Backend API call jo DB update karegi aur Socket emit karegi
       await api.patch(`/livequizzes/rooms/${roomCode}/controls`, {
         userId: currentUser?.uid,
         micBlocked: newMode === 'mic-disabled',
         pollRestricted: newMode === 'poll-disabled'
       });
-
       toast.success(
         newMode === 'full' ? 'All features enabled' :
           newMode === 'mic-disabled' ? 'Mic access restricted' :
@@ -2071,53 +1633,35 @@ export default function TeacherPollRoom() {
   };
 
   const handleLaunchPoll = async () => {
-
-    //confirmation before proceeding
     const confirmed = await showModal({
       type: 'default',
       title: 'are you sure you want to launch this poll?',
       description: 'Once launched, students will be able to see the question and submit their responses. the poll will run until the timer expires.',
       confirmText: 'Launch Poll',
-    })
-
+    });
     if (!confirmed) return;
 
     const currentQ = generatedQuestions[currentQuestionIndex];
     const timerDuration = questionTimers[currentQuestionIndex]?.initialTime || 30;
-
-    // Close any open edit mode when launching poll
     setEditingQuestionIndex(null);
-
-    // Update state
     setQuestion(currentQ.question);
     setOptions([...currentQ.options]);
     setCorrectOptionIndex(currentQ.correctOptionIndex);
-
-    // Mark as active and start the timer for this question
     setIsPollActive(true);
     startTimer(currentQuestionIndex, timerDuration);
-
-    // Use a timeout to ensure state updates are applied
-    setTimeout(() => {
-      setReadyToCreatePoll(true);
-    }, 0);
-
+    setTimeout(() => { setReadyToCreatePoll(true); }, 0);
     setLaunchedQuestions((prev) => {
       const newSet = new Set(prev).add(currentQuestionIndex);
       return newSet;
     });
-
   };
 
   if (!roomCode) return <div>Loading...</div>;
 
-  const getFilteredOptions = (opts: string[]) => {
-    return opts.filter(opt => opt.trim() !== '');
-  };
+  const getFilteredOptions = (opts: string[]) => opts.filter(opt => opt.trim() !== '');
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-50 dark:bg-gray-900 overflow-hidden">
-      {/* Main layout container */}
       <div className="flex flex-col h-screen">
         {/* Fixed header */}
         <div className="w-full bg-white dark:bg-gray-900 border-b border-slate-200 dark:border-gray-700 shadow-sm p-4 flex items-center justify-between z-50">
@@ -2126,21 +1670,15 @@ export default function TeacherPollRoom() {
               {roomCode}
             </span>
           </h2>
-          {/* Other navbar content */}
         </div>
 
         <div className="flex flex-1 overflow-hidden">
-          {/* Sidebar with student list */}
-
+          {/* Sidebar */}
           {!showResultsModal && !showPollModal && !showPreview && (
             <div className={`${isSidebarCollapsed ? 'w-12' : 'w-54'} bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col transition-all duration-300 ease-in-out`}>
-
-              {/* Sidebar header */}
               <div className={`h-16 border-b border-gray-200 dark:border-gray-700 flex items-center ${isSidebarCollapsed ? 'justify-center' : 'px-4'} flex-shrink-0`}>
                 {!isSidebarCollapsed && (
-                  <h2 className="text-lg font-semibold text-gray-800 dark:text-white flex-1">
-                    Participants
-                  </h2>
+                  <h2 className="text-lg font-semibold text-gray-800 dark:text-white flex-1">Participants</h2>
                 )}
                 <Button
                   onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
@@ -2157,25 +1695,18 @@ export default function TeacherPollRoom() {
                 </Button>
               </div>
 
-              {/* Capsule Toggle Button (Only show if not collapsed) */}
               {isHost && !isSidebarCollapsed && (
                 <div className="px-3 py-3 border-b border-gray-100 dark:border-gray-700">
                   <div className="flex bg-[#9b51e0] dark:bg-purple-700 rounded-full p-1 text-sm font-semibold shadow-inner">
                     <button
                       onClick={() => setActiveSidebarTab('students')}
-                      className={`flex-1 text-center py-1.5 px-3 rounded-full transition-all duration-300 ${activeSidebarTab === 'students'
-                        ? 'bg-white text-[#9b51e0] shadow-sm'
-                        : 'text-white hover:bg-white/20'
-                        }`}
+                      className={`flex-1 text-center py-1.5 px-3 rounded-full transition-all duration-300 ${activeSidebarTab === 'students' ? 'bg-white text-[#9b51e0] shadow-sm' : 'text-white hover:bg-white/20'}`}
                     >
                       Students
                     </button>
                     <button
                       onClick={() => setActiveSidebarTab('cohosts')}
-                      className={`flex-1 text-center py-1.5 px-3 rounded-full transition-all duration-300 ${activeSidebarTab === 'cohosts'
-                        ? 'bg-white text-[#9b51e0] shadow-sm'
-                        : 'text-white hover:bg-white/20'
-                        }`}
+                      className={`flex-1 text-center py-1.5 px-3 rounded-full transition-all duration-300 ${activeSidebarTab === 'cohosts' ? 'bg-white text-[#9b51e0] shadow-sm' : 'text-white hover:bg-white/20'}`}
                     >
                       Cohosts
                     </button>
@@ -2183,69 +1714,39 @@ export default function TeacherPollRoom() {
                 </div>
               )}
 
-              {/* List content */}
               <ScrollArea className="flex-1">
                 <div className="p-2 space-y-2">
-                  {/* STUDENTS TAB */}
                   {activeSidebarTab === 'students' && (
                     students.length > 0 ? (
-                      students.map((student: any, index: number) => {
-                        const studentName = student?.firstName;
-                        return (
-                          <div
-                            key={index}
-                            className="
-              group flex items-center justify-between
-              w-full
-              p-2 rounded-lg
-              hover:bg-gray-100 dark:hover:bg-gray-700
-              transition-colors
-            "
-                          >
-                            <div className="flex items-center gap-2 min-w-0">
-
-                              <div className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></div>
-
-                              {!isSidebarCollapsed && (
-                                <span className="text-sm text-gray-700 dark:text-gray-300 truncate">
-                                  {studentName}
-                                </span>
-                              )}
-
-                            </div>
+                      students.map((student: any, index: number) => (
+                        <div
+                          key={index}
+                          className="group flex items-center justify-between w-full p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></div>
                             {!isSidebarCollapsed && (
-                              <Trash2
-                                size={18}
-                                className="
-                  text-red-500
-                  cursor-pointer
-                  opacity-0
-                  group-hover:opacity-100
-                  transition-all duration-200
-                  hover:text-red-700 hover:scale-110
-                  flex-shrink-0
-                "
-                                onClick={() => handleRemoveStudent(student.email)}
-                              />
+                              <span className="text-sm text-gray-700 dark:text-gray-300 truncate">{student?.firstName}</span>
                             )}
-
                           </div>
-                        )
-                      }
-
-                      )
-
-                    )
-                      : (
-                        <div className="p-2">
-                          <p className="text-sm text-gray-500 dark:text-gray-400 text-center mt-4">
-                            {!isSidebarCollapsed && "No students connected yet"}
-                          </p>
+                          {!isSidebarCollapsed && (
+                            <Trash2
+                              size={18}
+                              className="text-red-500 cursor-pointer opacity-0 group-hover:opacity-100 transition-all duration-200 hover:text-red-700 hover:scale-110 flex-shrink-0"
+                              onClick={() => handleRemoveStudent(student.email)}
+                            />
+                          )}
                         </div>
-                      )
+                      ))
+                    ) : (
+                      <div className="p-2">
+                        <p className="text-sm text-gray-500 dark:text-gray-400 text-center mt-4">
+                          {!isSidebarCollapsed && "No students connected yet"}
+                        </p>
+                      </div>
+                    )
                   )}
 
-                  {/* COHOSTS TAB (Real Data) */}
                   {isHost && activeSidebarTab === 'cohosts' && (
                     cohosts.length > 0 ? (
                       cohosts.map((cohost, index) => (
@@ -2254,7 +1755,6 @@ export default function TeacherPollRoom() {
                           className="group flex items-center justify-between p-2 rounded-lg hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors border border-transparent hover:border-purple-200 dark:hover:border-purple-800"
                         >
                           <div className="flex items-center overflow-hidden">
-                            {/* Purple round dot */}
                             <div className="w-2 h-2 rounded-full bg-green-500 mr-2 shrink-0"></div>
                             {!isSidebarCollapsed && (
                               <span className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate">
@@ -2262,28 +1762,16 @@ export default function TeacherPollRoom() {
                               </span>
                             )}
                           </div>
-
-                          {/* Cross Button (Visible only to Host on hover) */}
                           {isHost && !isSidebarCollapsed && (
                             <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                               <button
-                                onClick={() =>
-                                  handleToggleCohostMic(
-                                    cohost.userId,
-                                    !(cohost.isMicMuted ?? false)
-                                  )
-                                }
-                                className={`p-1 rounded transition-colors ${cohost.isMicMuted
-                                  ? 'text-amber-600 hover:bg-amber-50'
-                                  : 'text-emerald-600 hover:bg-emerald-50'
-                                  }`}
+                                onClick={() => handleToggleCohostMic(cohost.userId, !(cohost.isMicMuted ?? false))}
+                                className={`p-1 rounded transition-colors ${cohost.isMicMuted ? 'text-amber-600 hover:bg-amber-50' : 'text-emerald-600 hover:bg-emerald-50'}`}
                                 title={cohost.isMicMuted ? 'Unmute Co-host Mic' : 'Mute Co-host Mic'}
                               >
                                 {cohost.isMicMuted ? <MicOff size={14} /> : <Mic size={14} />}
                               </button>
-
                               <button
-                                // Pass the correct ID format to the removal handler
                                 onClick={() => handleRemoveCohost(cohost?.userId)}
                                 className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-all duration-200"
                                 title="Remove Co-host"
@@ -2304,13 +1792,12 @@ export default function TeacherPollRoom() {
                   )}
                 </div>
               </ScrollArea>
-
             </div>
           )}
 
           {/* Main content */}
           <div className="flex-1 overflow-auto">
-            {/* Header */}
+            {/* Navbar */}
             <div className="fixed top-0 left-0 w-full h-16 bg-white dark:bg-gray-900 border-b border-slate-200 dark:border-gray-700 shadow-sm px-4 py-2 flex items-center justify-between z-50">
               <div className="flex items-center">
                 <Button
@@ -2354,7 +1841,7 @@ export default function TeacherPollRoom() {
                   disabled={!generatedQuestions.length || roomControlMode === 'poll-disabled'}
                 >
                   <Wand2 className="w-4 h-4 mr-2" />
-                  {showPreview ? 'Generated Questions' : 'Generated Questions'}
+                  Generated Questions
                 </Button>
                 {isHost && (
                   <Button
@@ -2402,7 +1889,6 @@ export default function TeacherPollRoom() {
                 <div className="hidden md:block">
                   <ThemeToggle />
                 </div>
-
                 <Button
                   onClick={() => copyToClipboard(roomCode, "Room code copied to clipboard!")}
                   variant="outline"
@@ -2438,7 +1924,6 @@ export default function TeacherPollRoom() {
                         <span className="xs:inline">{isCreating ? "Creating..." : "Invite Cohost"}</span>
                       </Button>
                     )}
-
                     <Button
                       onClick={endRoom}
                       variant="destructive"
@@ -2446,25 +1931,18 @@ export default function TeacherPollRoom() {
                       disabled={isEndingRoom}
                     >
                       {isEndingRoom ? (
-                        <>
-                          <Loader2 size={16} className="animate-spin" />
-                          Ending Room...
-                        </>
+                        <><Loader2 size={16} className="animate-spin" />Ending Room...</>
                       ) : (
-                        <>
-                          <LogOut size={16} />
-                          <span className="xs:inline">End Room</span>
-                        </>
+                        <><LogOut size={16} /><span className="xs:inline">End Room</span></>
                       )}
                     </Button>
                   </>
                 )}
                 {!isHost && currentUser && (
                   <Button
-                    onClick={() => LeaveCohost(roomCode, currentUser?.uid)}
+                    onClick={() => leaveCohost(roomCode, currentUser?.uid)}
                     variant="destructive"
                     className="hidden sm:flex items-center gap-1 sm:gap-2 text-xs sm:text-sm"
-                  // disabled={isEndingRoom}
                   >
                     <LogOut size={16} />
                     <span className="xs:inline">Leave Room</span>
@@ -2473,10 +1951,9 @@ export default function TeacherPollRoom() {
               </div>
             </div>
 
-            {/* Main content area with sidebar */}
+            {/* Main content area */}
             <div className="flex flex-1 overflow-hidden">
-
-              {/* Mobile Sidebar Overlay */}
+              {/* Mobile overlay */}
               {isMobileMenuOpen && (
                 <div
                   className="fixed inset-0 z-40 bg-black/50 md:hidden"
@@ -2486,252 +1963,71 @@ export default function TeacherPollRoom() {
 
               {/* Mobile Sidebar */}
               <div
-                className={`fixed top-0 left-0 h-full w-4/5 max-w-sm bg-white dark:bg-gray-800 shadow-lg z-50 transform transition-transform duration-300 ease-in-out ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
-                  } md:hidden`}
+                className={`fixed top-0 left-0 h-full w-4/5 max-w-sm bg-white dark:bg-gray-800 shadow-lg z-50 transform transition-transform duration-300 ease-in-out ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:hidden`}
               >
                 <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
                   <h3 className="text-lg font-semibold">Menu</h3>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setIsMobileMenuOpen(false)}
-                  >
+                  <Button variant="ghost" size="icon" onClick={() => setIsMobileMenuOpen(false)}>
                     <X className="h-5 w-5" />
                   </Button>
                 </div>
                 <div className="p-4 space-y-2">
                   <Button
                     variant={(!showPreview && !showPollModal && !showResultsModal) ? "default" : "outline"}
-                    onClick={() => {
-                      handleVoiceRecorderTab();
-                      setIsMobileMenuOpen(false);
-                    }}
+                    onClick={() => { handleVoiceRecorderTab(); setIsMobileMenuOpen(false); }}
                     className="w-full justify-start"
                   >
-                    <Mic className="w-4 h-4 mr-2" />
-                    Voice Recorder
+                    <Mic className="w-4 h-4 mr-2" />Voice Recorder
                   </Button>
                   <Button
                     variant={showPreview ? "default" : "outline"}
-                    onClick={() => {
-                      handleGeneratedQuestionClick();
-                      setIsMobileMenuOpen(false);
-                    }}
+                    onClick={() => { handleGeneratedQuestionClick(); setIsMobileMenuOpen(false); }}
                     className="w-full justify-start"
                     disabled={!generatedQuestions.length}
                   >
-                    <Wand2 className="w-4 h-4 mr-2" />
-                    {showPreview ? 'Generated Questions' : 'Generated Questions'}
+                    <Wand2 className="w-4 h-4 mr-2" />Generated Questions
                   </Button>
-                  {
-                    isHost && (
-                      <Button
-                        variant={showPollModal ? "default" : "outline"}
-                        onClick={() => {
-                          handleCreateManualPoll();
-                          setIsMobileMenuOpen(false);
-                        }}
-                        className="w-full justify-start"
-                        disabled={roomControlMode === 'poll-disabled'}
-                      >
-                        <Plus className="w-4 h-4 mr-2" />
-                        Create Live Poll
-                      </Button>
-                    )
-                  }
+                  {isHost && (
+                    <Button
+                      variant={showPollModal ? "default" : "outline"}
+                      onClick={() => { handleCreateManualPoll(); setIsMobileMenuOpen(false); }}
+                      className="w-full justify-start"
+                      disabled={roomControlMode === 'poll-disabled'}
+                    >
+                      <Plus className="w-4 h-4 mr-2" />Create Live Poll
+                    </Button>
+                  )}
                   <Button
                     variant={showResultsModal ? "default" : "outline"}
-                    onClick={() => {
-                      handlePollResultsbutton();
-                      setIsMobileMenuOpen(false);
-                    }}
+                    onClick={() => { handlePollResultsbutton(); setIsMobileMenuOpen(false); }}
                     className="w-full justify-start"
                   >
-                    <BarChart2 className="w-4 h-4 mr-2" />
-                    Poll Results
+                    <BarChart2 className="w-4 h-4 mr-2" />Poll Results
                   </Button>
-                  {
-                    isHost && (
-                      <div className="pt-4 mt-4 border-t border-gray-200 dark:border-gray-700">
-                        <Button
-                          onClick={() => {
-                            setIsMobileMenuOpen(false);
-                            endRoom();
-                          }}
-                          variant="destructive"
-                          className="w-full justify-start"
-                          disabled={isEndingRoom}
-                        >
-                          {isEndingRoom ? (
-                              <>
-                                <Loader2 size={16} className="animate-spin" />
-                                Ending Room...
-                              </>
-                            ) : (
-                              <>
-                                <LogOut className="w-4 h-4 mr-2" />
-                                End Room
-                              </>
-                            )}
-                        </Button>
-                      </div>
-                    )
-                  }
+                  {isHost && (
+                    <div className="pt-4 mt-4 border-t border-gray-200 dark:border-gray-700">
+                      <Button
+                        onClick={() => { setIsMobileMenuOpen(false); endRoom(); }}
+                        variant="destructive"
+                        className="w-full justify-start"
+                        disabled={isEndingRoom}
+                      >
+                        {isEndingRoom ? (
+                          <><Loader2 size={16} className="animate-spin" />Ending Room...</>
+                        ) : (
+                          <><LogOut className="w-4 h-4 mr-2" />End Room</>
+                        )}
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* Main content area */}
+              {/* Main scrollable area */}
               <div className="flex-1 overflow-auto md:pt-4">
-                {/* End Room Confirmation Modal */}
-                {/* {showEndRoomConfirm && (
-                  <div className="fixed inset-0 z-50 flex justify-center bg-black/50">
-                    <Card className="w-full max-w-md mx-3 bg-white dark:bg-gray-800">
-                      <CardHeader>
-                        <CardTitle className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
-                          <AlertTriangle size={20} />
-                          End Room Confirmation
-                        </CardTitle>
-                      </CardHeader>r
-                      <CardContent className="space-y-4">
-                        <p className="text-gray-700 dark:text-gray-300">
-                          Are you sure you want to end this room? This action cannot be undone.
-                        </p>
-                        <ul className="text-sm text-gray-600 dark:text-gray-400 space-y-1">
-                          <li>• All students will be disconnected</li>
-                          <li>• Active polls will be stopped</li>
-                          <li>• Room will be permanently closed</li>
-                        </ul>
-                        <div className="flex gap-3 justify-end">
-                          <Button
-                            onClick={() => setShowEndRoomConfirm(false)}
-                            variant="outline"
-                            disabled={isEndingRoom}
-                          >
-                            Cancel
-                          </Button>
-                          <Button
-                            onClick={endRoom}
-                            variant="destructive"
-                            disabled={isEndingRoom}
-                            className="flex items-center gap-2"
-                          >
-                            {isEndingRoom ? (
-                              <>
-                                <Loader2 size={16} className="animate-spin" />
-                                Ending Room...
-                              </>
-                            ) : (
-                              <>
-                                <LogOut size={16} />
-                                End Room
-                              </>
-                            )}
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </div>
-                )} */}
-
-                {/* GenAI Tab */}
                 <div className="flex-1 px-1 border-r border-r-slate-200 dark:border-r-gray-700 bg-white/90 dark:bg-gray-900/90 shadow">
                   <ScrollArea className="h-full pe-3">
-                    {/* {!isRecording && queuedGeneratedQuestions.length > 0 && (
-              <Card className="mb-6 border border-purple-200 dark:border-purple-900/50 bg-gradient-to-br from-purple-50/50 to-white dark:from-gray-900/50 dark:to-gray-900">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg font-semibold text-purple-700 dark:text-purple-300 flex items-center gap-2">
-                    <Wand2 className="h-5 w-5" />
-                    Generated Questions
-                  </CardTitle>
-                  <p className="text-sm text-muted-foreground">
-                    Review and manage your AI-generated questions
-                  </p>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    {queuedGeneratedQuestions.map((q, idx) => (
-                      <div
-                        key={idx}
-                        className={`p-4 rounded-lg border transition-all duration-200 ${idx === queuedViewerIndex
-                          ? 'border-purple-300 dark:border-purple-800 bg-purple-50/50 dark:bg-purple-900/20 scale-[1.01] shadow-sm'
-                          : 'border-gray-200 dark:border-gray-700 hover:border-purple-200 dark:hover:border-purple-800/70 bg-white dark:bg-gray-800/50'
-                          }`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex-1">
-                            <h4 className="font-medium text-gray-900 dark:text-gray-100 mb-2">
-                              Q{idx + 1}: {q.question}
-                            </h4>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                              {q.options.map((opt, optIdx) => (
-                                <div
-                                  key={optIdx}
-                                  className={`p-2 rounded text-sm ${optIdx === q.correctOptionIndex
-                                    ? 'bg-green-100 dark:bg-green-900/30 border border-green-200 dark:border-green-800 text-green-800 dark:text-green-200 font-medium'
-                                    : 'bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-300'
-                                    }`}
-                                >
-                                  {opt || `Option ${optIdx + 1}`}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="flex flex-col gap-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-8 px-3 text-xs border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/30"
-                              onClick={() => {
-                                setQuestion(q.question);
-                                setOptions(q.options);
-                                setCorrectOptionIndex(q.correctOptionIndex);
-                                toast.success('Question loaded into the form');
-                              }}
-                            >
-                              Use This
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-8 px-3 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
-                              onClick={() => {
-                                const newQuestions = [...queuedGeneratedQuestions];
-                                newQuestions.splice(idx, 1);
-                                setQueuedGeneratedQuestions(newQuestions);
-                                queuedGeneratedQuestionsRef.current = newQuestions;
-                                toast.success('Question removed');
-                              }}
-                            >
-                              Remove
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="flex justify-between items-center mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-                    <div className="text-sm text-muted-foreground">
-                      {queuedGeneratedQuestions.length} question{queuedGeneratedQuestions.length !== 1 ? 's' : ''} generated
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
-                      onClick={() => {
-                        setQueuedGeneratedQuestions([]);
-                        queuedGeneratedQuestionsRef.current = [];
-                        toast.success('All questions cleared');
-                      }}
-                    >
-                      Clear All
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            )} */}
                     {!showPollModal && !showResultsModal && (
-
                       <div className="space-y-4 sm:space-y-6">
                         {!showPreview ? (
                           <Card className="w-full bg-transparent border-none shadow-none">
@@ -2741,16 +2037,7 @@ export default function TeacherPollRoom() {
                                   <Volume2 className="h-4 w-4 text-purple-500" />
                                   Voice Recorder
                                 </CardTitle>
-
                                 <div className="flex items-center gap-2">
-                                  {/* <Button
-                              onClick={() => setShowStudentsModal(true)}
-                              variant="outline"
-                              className="h-9 flex items-center gap-2 border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-800 rounded-md text-sm"
-                            >
-                              <Users2 className="h-4 w-4 text-purple-500" />
-                              <span className="hidden sm:inline dark:text-white">Students</span>
-                            </Button> */}
                                   <Select
                                     value={language}
                                     onValueChange={(value) => setLanguage(value as SupportedLanguage)}
@@ -2764,11 +2051,7 @@ export default function TeacherPollRoom() {
                                     </SelectTrigger>
                                     <SelectContent className="border border-gray-200 dark:border-gray-700 rounded-md shadow-md bg-white/90 dark:bg-gray-900/90">
                                       {supportedLanguages.map((lang) => (
-                                        <SelectItem
-                                          key={lang.code}
-                                          value={lang.code}
-                                          className="hover:bg-purple-100 dark:hover:bg-purple-700 transition-colors"
-                                        >
+                                        <SelectItem key={lang.code} value={lang.code} className="hover:bg-purple-100 dark:hover:bg-purple-700 transition-colors">
                                           {lang.label}
                                         </SelectItem>
                                       ))}
@@ -2818,8 +2101,6 @@ export default function TeacherPollRoom() {
                                             value={customIntervalInput}
                                             onChange={(e) => setCustomIntervalInput(e.target.value)}
                                             onBlur={(e) => {
-                                              // small delay to allow button click to be processed if focus moved there
-                                              // or check relatedTarget
                                               if (!e.relatedTarget || !e.relatedTarget.closest('.save-interval-btn')) {
                                                 setCustomIntervalInput(autoGenInterval.toString());
                                               }
@@ -2860,29 +2141,22 @@ export default function TeacherPollRoom() {
                                           className={`flex items-center gap-2 px-3 py-1 bg-purple-50 dark:bg-purple-900/30 border border-purple-100 dark:border-purple-800 rounded-full cursor-pointer hover:bg-purple-100 dark:hover:bg-purple-900/50 transition-colors ${(isRecording || isLiveRecordingActive) ? 'opacity-80 pointer-events-none' : ''}`}
                                           onClick={() => !(isRecording || isLiveRecordingActive) && setIsIntervalLocked(false)}
                                         >
-                                          <span className="text-sm font-medium text-purple-700 dark:text-purple-300">
-                                            {autoGenInterval}s
-                                          </span>
-                                          {!(isRecording || isLiveRecordingActive) && (
-                                            <Edit3 className="h-3 w-3 text-purple-400" />
-                                          )}
+                                          <span className="text-sm font-medium text-purple-700 dark:text-purple-300">{autoGenInterval}s</span>
+                                          {!(isRecording || isLiveRecordingActive) && <Edit3 className="h-3 w-3 text-purple-400" />}
                                         </div>
                                       )}
                                     </div>
                                   )}
+
                                   <Select onValueChange={(value) => {
-                                    // Toggle the selected panel if it's already open
                                     if ((value === 'uploadAudio' && showAudioOptions) ||
                                       (value === 'uploadTxt' && showUploadTextFileModal) ||
                                       (value === 'pasteContent' && showPasteModal)) {
-                                      // Close all panels if clicking the same option again
                                       setShowAudioOptions(false);
                                       setShowUploadTextFileModal(false);
                                       setShowPasteModal(false);
                                       return;
                                     }
-
-                                    // Open the selected panel and close others
                                     if (value === 'uploadAudio') {
                                       setShowAudioOptions(true);
                                       setShowUploadTextFileModal(false);
@@ -2891,7 +2165,6 @@ export default function TeacherPollRoom() {
                                       setShowUploadTextFileModal(true);
                                       setShowAudioOptions(false);
                                       setShowPasteModal(false);
-                                      // Only trigger file input if we're opening the panel
                                       document.getElementById('textFileInput')?.click();
                                     } else if (value === 'pasteContent') {
                                       setShowPasteModal(true);
@@ -2899,49 +2172,23 @@ export default function TeacherPollRoom() {
                                       setShowAudioOptions(false);
                                     }
                                   }}>
-                                    <SelectTrigger className="w-[160px] sm:w-[180px] md-[200px] h-9 border border-gray-300 dark:border-gray-700 rounded-md hover:border-purple-500 focus:border-purple-500 transition-colors flex items-center gap-2">
+                                    <SelectTrigger className="w-[160px] sm:w-[180px] h-9 border border-gray-300 dark:border-gray-700 rounded-md hover:border-purple-500 focus:border-purple-500 transition-colors flex items-center gap-2">
                                       <div className="flex items-center justify-between w-full">
                                         <SelectValue placeholder="Upload Options" />
                                       </div>
                                     </SelectTrigger>
                                     <SelectContent>
                                       <SelectItem value="uploadAudio">
-                                        <div className="flex items-center gap-2">
-                                          <Volume2 className="h-4 w-4" />
-                                          <span>Upload Audio</span>
-                                        </div>
+                                        <div className="flex items-center gap-2"><Volume2 className="h-4 w-4" /><span>Upload Audio</span></div>
                                       </SelectItem>
                                       <SelectItem value="uploadTxt">
-                                        <div className="flex items-center gap-2">
-                                          <Upload className="h-4 w-4" />
-                                          <span>Upload Text File</span>
-                                        </div>
+                                        <div className="flex items-center gap-2"><Upload className="h-4 w-4" /><span>Upload Text File</span></div>
                                       </SelectItem>
                                       <SelectItem value="pasteContent">
-                                        <div className="flex items-center gap-2">
-                                          <ClipboardList className="h-4 w-4" />
-                                          <span>Paste Content</span>
-                                        </div>
+                                        <div className="flex items-center gap-2"><ClipboardList className="h-4 w-4" /><span>Paste Content</span></div>
                                       </SelectItem>
                                     </SelectContent>
                                   </Select>
-
-
-                                  {/* 
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => setShowAudioOptions(!showAudioOptions)}
-                              className="h-9 flex items-center gap-2 text-sm font-medium text-muted-foreground border border-gray-300 dark:border-gray-700 dark:hover:bg-gray-800 hover:bg-gray-50 transition-colors rounded-md"
-                            >
-                              <Upload className="h-4 w-4 text-purple-500" />
-                              <span className="hidden sm:inline">Audio Upload</span>
-                              {showAudioOptions ? (
-                                <ChevronUp className="h-4 w-4" />
-                              ) : (
-                                <ChevronDown className="h-4 w-4" />
-                              )}
-                            </Button> */}
 
                                   <Button
                                     onClick={clearGenAIData}
@@ -2957,6 +2204,19 @@ export default function TeacherPollRoom() {
 
                             <CardContent className="space-y-6">
 
+                              {/* Mode Toggle */}
+                              {isHost && (
+                                <div className="flex justify-center pb-1">
+                                  <QuestionModeSwitch
+                                    mode={questionMode}
+                                    onChange={handleQuestionModeChange}
+                                    isHost={isHost}
+                                    disabled={isRecording || isLiveRecordingActive}
+                                  />
+                                </div>
+                              )}
+
+                              {/* Mic UI */}
                               <div className="flex flex-col items-center justify-center gap-4 p-6 border rounded-lg bg-transparent">
                                 {(isMicMutedByHost || isMicLockedByOtherUser) && (
                                   <div
@@ -2972,7 +2232,6 @@ export default function TeacherPollRoom() {
                                       ) : (
                                         <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
                                       )}
-
                                       <p className="text-sm">
                                         {isMicMutedByHost
                                           ? "Your mic is muted by host. Recording is disabled until host unmutes you."
@@ -2981,30 +2240,31 @@ export default function TeacherPollRoom() {
                                     </div>
                                   </div>
                                 )}
+
                                 {roomControlMode === 'mic-disabled' && !isHost && (
                                   <div role="alert" className="w-full max-w-xl mb-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-red-900 dark:border-red-700 dark:bg-red-900/20 dark:text-red-200">
                                     <div className="flex items-start gap-2">
                                       <Shield className="h-4 w-4 mt-0.5 shrink-0" />
-                                      <p className="text-sm font-medium">
-                                        The host has disabled microphone access for all co-hosts.
-                                      </p>
+                                      <p className="text-sm font-medium">The host has disabled microphone access for all co-hosts.</p>
                                     </div>
                                   </div>
                                 )}
+
                                 <Button
                                   onClick={() => handleRecordingToggle()}
                                   disabled={roomControlMode === 'mic-disabled' || isMicLockedByOtherUser || isMicUnavailable}
                                   size="lg"
-                                  // disabled={isMicUnavailable}
-                                  variant={(isRecording && !useWhisper && !useWhisperGGML && !useExternlApi) ? "destructive" : "default"}
+                                  variant={(isRecording && !useWhisper && !useWhisperGGML && !useExternalApi) ? "destructive" : "default"}
                                   className={`h-20 w-20 md:w-25 md:h-25 rounded-full flex items-center justify-center 
-                              bg-gradient-to-r from-purple-500 to-blue-500 text-white 
-                              hover:from-purple-600 hover:to-blue-600 shadow-lg 
-                              ${(isRecording && !useWhisper && !useWhisperGGML && !useExternlApi) && "animate-pulse"} transition-all
-                              ${isMicUnavailable ? "opacity-50 cursor-not-allowed hover:from-purple-500 hover:to-blue-500" : ""}
-                              `}
+                                    bg-gradient-to-r from-purple-500 to-blue-500 text-white 
+                                    hover:from-purple-600 hover:to-blue-600 shadow-lg 
+                                    ${(isRecording && !useWhisper && !useWhisperGGML && !useExternalApi) && "animate-pulse"} transition-all
+                                    ${isMicUnavailable ? "opacity-50 cursor-not-allowed hover:from-purple-500 hover:to-blue-500" : ""}
+                                  `}
                                 >
-                                  {(isRecording && !useWhisper && !useWhisperGGML && !useExternlApi) ? <MicOff className="h-8 w-8" /> : <Mic className="h-8 w-8" />}
+                                  {(isRecording && !useWhisper && !useWhisperGGML && !useExternalApi)
+                                    ? <MicOff className="h-8 w-8" />
+                                    : <Mic className="h-8 w-8" />}
                                 </Button>
 
                                 <div className="flex items-end gap-1 h-8 mt-8">
@@ -3013,10 +2273,7 @@ export default function TeacherPollRoom() {
                                       <div
                                         key={index}
                                         className="bg-gradient-to-t from-blue-500 to-purple-500 rounded-full w-2 transition-all duration-75"
-                                        style={{
-                                          height: `${Math.max(level * 80, 8)}%`,
-                                          opacity: 0.6 + level * 0.4,
-                                        }}
+                                        style={{ height: `${Math.max(level * 80, 8)}%`, opacity: 0.6 + level * 0.4 }}
                                       />
                                     ))
                                   ) : isRecording && !useWhisper && !useWhisperGGML ? (
@@ -3029,7 +2286,7 @@ export default function TeacherPollRoom() {
                                     ))
                                   ) : (
                                     <div className="space-y-2">
-                                      <p className="text-sm text-muted-foreground ">Tap mic to start recording</p>
+                                      <p className="text-sm text-muted-foreground">Tap mic to start recording</p>
                                       <div className="flex flex-col space-y-2">
                                         <div className="flex items-center space-x-2">
                                           <Checkbox
@@ -3040,16 +2297,13 @@ export default function TeacherPollRoom() {
                                                 setUseWhisper(true);
                                                 setUseWhisperGGML(false);
                                                 transcriber.setTranscriberType("xenova");
-                                                setAudioManagerKey(Date.now()); // Reset AudioManager when type changes
+                                                setAudioManagerKey(Date.now());
                                               } else {
                                                 setUseWhisper(false);
                                               }
                                             }}
                                           />
-                                          <label
-                                            htmlFor="use-whisper"
-                                            className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                                          >
+                                          <label htmlFor="use-whisper" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
                                             Use Whisper AI
                                           </label>
                                         </div>
@@ -3062,16 +2316,13 @@ export default function TeacherPollRoom() {
                                                 setUseWhisperGGML(true);
                                                 setUseWhisper(false);
                                                 transcriber.setTranscriberType("ggml");
-                                                setAudioManagerKey(Date.now()); // Reset AudioManager when type changes
+                                                setAudioManagerKey(Date.now());
                                               } else {
                                                 setUseWhisperGGML(false);
                                               }
                                             }}
                                           />
-                                          <label
-                                            htmlFor="use-whisper-ggml"
-                                            className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                                          >
+                                          <label htmlFor="use-whisper-ggml" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
                                             Use Whisper ggml
                                           </label>
                                         </div>
@@ -3080,153 +2331,29 @@ export default function TeacherPollRoom() {
                                   )}
                                 </div>
                               </div>
-                              {/*
-                        {(showAudioOptions || useWhisperGGML)&& (
-                          <div className="border border-border rounded-lg p-4 space-y-2 transition-transform duration-200 hover:scale-102">
-                            <p className="text-xs text-muted-foreground mb-1">
-                              Please clear the previous transcription before uploading a new audio file.
-                            </p>
-                            <p className="text-xs text-muted-foreground mb-2">
-                              Upload an audio file instead of recording
-                            </p>
-                            <div className="mb-4">
-                              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                                Transcription Engine:
-                              </label>
-                              <Select
-                                value={transcriber.transcriberType}
-                                onValueChange={(value) => {
-                                  transcriber.setTranscriberType(value as "xenova" | "ggml");
-                                  setAudioManagerKey(Date.now()); 
-                                  
-                                 
-                                  if (value === "ggml") {
-                                    setUseWhisper(false);
-                                    setUseWhisperGGML(true);
-                                  } else if (value === "xenova") {
-                                    setUseWhisper(true);
-                                    setUseWhisperGGML(false);
-                                  }
-                                }}
-                              >
-                                <SelectTrigger className="w-full max-w-xs">
-                                  <SelectValue placeholder="Select transcription engine" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="xenova">Xenova (Transformers.js)</SelectItem>
-                                  <SelectItem value="ggml">GGML (Whisper.cpp)</SelectItem>
-                                </SelectContent>
-                              </Select>
-                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                                {transcriber.transcriberType === "xenova" 
-                                  ? "Uses Transformers.js - Better for multilingual support"
-                                  : "Uses Whisper.cpp GGML - Faster, smaller models"}
-                              </p>
-                            </div>
-                            
-                           
-                            {useWhisperGGML && (
-                              <div className="mb-4 space-y-2">
-                               
-                                {transcriber.isModelLoading && transcriber.progressItems.length > 0 && (
-                                  <div className="border border-blue-200 dark:border-blue-800 rounded-lg p-4 bg-blue-50 dark:bg-blue-900/20">
-                                    <div className="flex items-center justify-between mb-2">
-                                      <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
-                                        Downloading model...
-                                      </span>
-                                      <span className="text-xs text-blue-600 dark:text-blue-400">
-                                        {transcriber.progressItems.map(item => 
-                                          `${(item.progress * 100).toFixed(1)}%`
-                                        ).join(', ')}
-                                      </span>
-                                    </div>
-                                    {transcriber.progressItems.map((item, index) => (
-                                      <div key={index} className="space-y-1">
-                                        <div className="flex items-center justify-between text-xs text-blue-600 dark:text-blue-400 mb-1">
-                                          <span>{item.name || item.file}</span>
-                                          <span>
-                                            {((item.loaded / 1024 / 1024).toFixed(1))}MB / {((item.total / 1024 / 1024).toFixed(1))}MB
-                                          </span>
-                                        </div>
-                                        <div className="w-full bg-blue-200 dark:bg-blue-800 rounded-full h-2 overflow-hidden">
-                                          <div 
-                                            className="bg-gradient-to-r from-blue-500 to-purple-500 h-2 rounded-full transition-all duration-300 ease-out"
-                                            style={{ width: `${(item.progress * 100)}%` }}
-                                          ></div>
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                                
-                                
-                                {transcriber.isModelLoading && transcriber.progressItems.length === 0 && (
-                                  <div className="border border-blue-200 dark:border-blue-800 rounded-lg p-3 bg-blue-50 dark:bg-blue-900/20">
-                                    <div className="flex items-center gap-2">
-                                      <svg className="animate-spin h-4 w-4 text-blue-600 dark:text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
-                                      </svg>
-                                      <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
-                                        Checking for cached model or initializing...
-                                      </span>
-                                    </div>
-                                  </div>
-                                )}
-                                
-                               
-                                {!transcriber.isModelLoading && transcriber.progressItems.length === 0 && (
-                                  <div className="border border-green-200 dark:border-green-800 rounded-lg p-3 bg-green-50 dark:bg-green-900/20">
-                                    <div className="flex items-center gap-2">
-                                      <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                                      <span className="text-sm font-medium text-green-700 dark:text-green-300">
-                                        Model ready! You can start recording.
-                                      </span>
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                            
-                            <AudioManager
-                              key={audioManagerKey}
-                              transcriber={transcriber}
-                              enableLiveTranscription={useWhisper || useWhisperGGML}
-                              onLiveRecordingStart={() => setIsLiveRecordingActive(true)}
-                              onLiveRecordingStop={() => {
-                                setIsLiveRecordingActive(false);
-                                setLocalVoiceActivity(false);
-                              }}
-                              onVoiceActivityChange={(active) => {
-                                setLocalVoiceActivity(active);
-                              }}
-                            />
-                          </div>
-                        )}
-                            */}
+
+                              {/* Manual Mode form */}
+                              {questionMode === 'manual' && isHost && (
+                                <ManualQuestionForm
+                                  onAddQuestion={handleAddManualQuestion}
+                                  hasTranscript={!!(displayTranscript.trim() || transcript)}
+                                />
+                              )}
+
                               {/* Text File Upload UI */}
                               {showUploadTextFileModal && (
-                                <div className="border border-border rounded-lg p-4 space-y-2 transition-transform duration-200 hover:scale-102">
+                                <div className="border border-border rounded-lg p-4 space-y-2">
                                   <div className="flex flex-col items-center justify-center p-6 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-gray-800 transition-colors">
                                     <Upload className="h-10 w-10 text-purple-500 mb-3" />
                                     <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
                                       {fileName ? fileName : 'Upload a text file to generate questions'}
                                     </p>
                                     <div className="flex flex-col sm:flex-row gap-3 w-full max-w-md">
-                                      <label
-                                        htmlFor="textFileInput"
-                                        className="flex-1"
-                                      >
-                                        <div className="h-10 px-4 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 dark:focus:ring-offset-gray-800 cursor-pointer text-center">
+                                      <label htmlFor="textFileInput" className="flex-1">
+                                        <div className="h-10 px-4 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 cursor-pointer text-center">
                                           {fileName ? 'Change File' : 'Select Text File (.txt)'}
                                         </div>
-                                        <input
-                                          type="file"
-                                          id="textFileInput"
-                                          accept=".txt"
-                                          className="hidden"
-                                          onChange={handleTextFileSelect}
-                                        />
+                                        <input type="file" id="textFileInput" accept=".txt" className="hidden" onChange={handleTextFileSelect} />
                                       </label>
                                       <Button
                                         onClick={handleTextFileSubmit}
@@ -3234,28 +2361,17 @@ export default function TeacherPollRoom() {
                                         className="h-10 bg-purple-600 hover:bg-purple-700 text-white flex-1"
                                       >
                                         {isProcessing ? (
-                                          <>
-                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                            Processing...
-                                          </>
-                                        ) : (
-                                          'Generate Questions'
-                                        )}
+                                          <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Processing...</>
+                                        ) : 'Generate Questions'}
                                       </Button>
                                     </div>
                                   </div>
-
-                                  {/* File Preview */}
                                   {textFileContent && (
                                     <div className="mt-4 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
                                       <div className="px-4 py-3 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
                                         <div className="flex justify-between items-center">
-                                          <h4 className="text-sm font-medium text-gray-900 dark:text-white">
-                                            Preview
-                                          </h4>
-                                          <span className="text-xs text-gray-500 dark:text-gray-400">
-                                            {textFileContent.length} characters
-                                          </span>
+                                          <h4 className="text-sm font-medium text-gray-900 dark:text-white">Preview</h4>
+                                          <span className="text-xs text-gray-500 dark:text-gray-400">{textFileContent.length} characters</span>
                                         </div>
                                       </div>
                                       <div className="p-4 bg-white dark:bg-gray-800 max-h-60 overflow-y-auto">
@@ -3275,12 +2391,8 @@ export default function TeacherPollRoom() {
                                 <div className="space-y-4">
                                   <div className="border border-border rounded-lg p-4 space-y-4">
                                     <div className="flex justify-between items-center">
-                                      <h4 className="text-sm font-medium text-gray-900 dark:text-white">
-                                        Paste Your Content
-                                      </h4>
-                                      <span className="text-xs text-gray-500 dark:text-gray-400">
-                                        {pastedContent.length} characters
-                                      </span>
+                                      <h4 className="text-sm font-medium text-gray-900 dark:text-white">Paste Your Content</h4>
+                                      <span className="text-xs text-gray-500 dark:text-gray-400">{pastedContent.length} characters</span>
                                     </div>
                                     <textarea
                                       className="w-full h-40 p-3 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent"
@@ -3289,54 +2401,21 @@ export default function TeacherPollRoom() {
                                       onChange={(e) => setPastedContent(e.target.value)}
                                     />
                                     <div className="flex justify-end space-x-2">
-                                      <Button
-                                        variant="outline"
-                                        onClick={() => {
-                                          setPastedContent('');
-                                          setShowPasteModal(false);
-                                        }}
-                                      >
-                                        Cancel
-                                      </Button>
+                                      <Button variant="outline" onClick={() => { setPastedContent(''); setShowPasteModal(false); }}>Cancel</Button>
                                       <Button
                                         onClick={handlePasteSubmit}
                                         disabled={!pastedContent.trim() || isProcessing}
                                         className="bg-purple-600 hover:bg-purple-700 text-white"
                                       >
                                         {isProcessing ? (
-                                          <>
-                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                            Processing...
-                                          </>
-                                        ) : (
-                                          'Generate Questions'
-                                        )}
+                                          <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Processing...</>
+                                        ) : 'Generate Questions'}
                                       </Button>
                                     </div>
                                   </div>
                                 </div>
                               )}
 
-                              {/* GGML Streaming Status Indicators 
-                        {useWhisperGGML && isLiveRecordingActive && (
-                          <div className="flex items-center gap-4 mb-2 p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg">
-                            <div className="flex items-center gap-2">
-                              <div className={`w-3 h-3 rounded-full ${(transcriber.voiceActivity || localVoiceActivity) ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}></div>
-                              <span className="text-sm font-medium text-purple-700 dark:text-purple-300">
-                                {(transcriber.voiceActivity || localVoiceActivity) ? 'Listening... (speech detected)' : 'Waiting... (silence)'}
-                              </span>
-                            </div>
-                            {transcriber.streamStatus && (
-                              <div className="text-xs text-purple-600 dark:text-purple-400">
-                                Status: {transcriber.streamStatus === 'waiting' ? 'Waiting for speech...' : 
-                                         transcriber.streamStatus === 'processing' ? 'Processing audio...' :
-                                         transcriber.streamStatus === 'stopped' ? 'Stopped' :
-                                         transcriber.streamStatus}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        */}
                               <Transcript
                                 transcribedData={undefined}
                                 liveTranscription={(useWhisper || useWhisperGGML) ? ('') : displayTranscript}
@@ -3364,23 +2443,17 @@ export default function TeacherPollRoom() {
                                 {showAdvanced && (
                                   <div className="border border-t-0 border-gray-200 dark:border-gray-700 rounded-b-md px-4 py-4 bg-gray-50/50 dark:bg-gray-800/50 space-y-6 hover:border-purple-500 dark:hover:border-purple-500 transition-colors">
                                     <div className="space-y-2">
-                                      <label className="text-sm font-medium text-muted-foreground">
-                                        Question Specification (optional)
-                                      </label>
+                                      <label className="text-sm font-medium text-muted-foreground">Question Specification (optional)</label>
                                       <Input
                                         placeholder="e.g., Focus on key concepts, multiple choice only"
                                         value={questionSpec}
                                         onChange={(e) => setQuestionSpec(e.target.value)}
                                         className="text-xs sm:text-base"
                                       />
-                                      <p className="text-xs text-muted-foreground">
-                                        Provide specific instructions for question generation
-                                      </p>
+                                      <p className="text-xs text-muted-foreground">Provide specific instructions for question generation</p>
                                     </div>
                                     <div className="space-y-2">
-                                      <label className="text-sm font-medium text-muted-foreground">
-                                        Number of Questions
-                                      </label>
+                                      <label className="text-sm font-medium text-muted-foreground">Number of Questions</label>
                                       <Input
                                         type="number"
                                         placeholder="e.g., 5"
@@ -3390,53 +2463,43 @@ export default function TeacherPollRoom() {
                                         onChange={(e) => setQuestionCount(Number(e.target.value))}
                                         className="text-xs sm:text-base"
                                       />
-                                      <p className="text-xs text-muted-foreground">
-                                        Specify how many questions to generate (1-20)
-                                      </p>
+                                      <p className="text-xs text-muted-foreground">Specify how many questions to generate (1-20)</p>
                                     </div>
                                     <div className="space-y-2">
                                       <label className="text-sm font-medium text-muted-foreground">AI Model</label>
                                       <ModelSelector selectedModel={selectedModel} onModelChange={setSelectedModel} />
-                                      <p className="text-xs text-muted-foreground">
-                                        Select the AI model to use for generation
-                                      </p>
+                                      <p className="text-xs text-muted-foreground">Select the AI model to use for generation</p>
                                     </div>
                                   </div>
                                 )}
                               </div>
 
-                              <div className="flex justify-center mt-4">
-                                <Button
-                                  onClick={handleGenerateClick}
-                                  disabled={
-                                    isMicUnavailable ||
-                                    isMicLockedByOtherUser ||
-                                    isRecording ||
-                                    isListening ||
-                                    isGenerating ||
-                                    (isGenerateClicked && transcriber.output?.isBusy) ||
-                                    roomControlMode === 'poll-disabled'
-                                  }
-                                  className="bg-gradient-to-r from-purple-500 to-blue-500 text-white hover:from-purple-600 hover:to-blue-600 px-5 sm:px-7 py-2 sm:py-3 rounded-md flex items-center gap-2 text-sm sm:text-base transition-all"
-                                >
-                                  {isGenerateClicked && transcriber.output?.isBusy ? (
-                                    <>
-                                      <Loader2 size={16} className="animate-spin" />
-                                      Transcribing...
-                                    </>
-                                  ) : isGenerating ? (
-                                    <>
-                                      <Loader2 size={16} className="animate-spin" />
-                                      Generating...
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Wand2 size={16} />
-                                      Generate Questions
-                                    </>
-                                  )}
-                                </Button>
-                              </div>
+                              {/* Auto Mode: Generate Questions button */}
+                              {questionMode === 'auto' && (
+                                <div className="flex justify-center mt-4">
+                                  <Button
+                                    onClick={handleGenerateClick}
+                                    disabled={
+                                      isMicUnavailable ||
+                                      isMicLockedByOtherUser ||
+                                      isRecording ||
+                                      isListening ||
+                                      isGenerating ||
+                                      (isGenerateClicked && transcriber.output?.isBusy) ||
+                                      roomControlMode === 'poll-disabled'
+                                    }
+                                    className="bg-gradient-to-r from-purple-500 to-blue-500 text-white hover:from-purple-600 hover:to-blue-600 px-5 sm:px-7 py-2 sm:py-3 rounded-md flex items-center gap-2 text-sm sm:text-base transition-all"
+                                  >
+                                    {isGenerateClicked && transcriber.output?.isBusy ? (
+                                      <><Loader2 size={16} className="animate-spin" />Transcribing...</>
+                                    ) : isGenerating ? (
+                                      <><Loader2 size={16} className="animate-spin" />Generating...</>
+                                    ) : (
+                                      <><Wand2 size={16} />Generate Questions</>
+                                    )}
+                                  </Button>
+                                </div>
+                              )}
 
                             </CardContent>
                           </Card>
@@ -3455,9 +2518,7 @@ export default function TeacherPollRoom() {
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  onClick={() => {
-                                    setShowPreview(false);
-                                  }}
+                                  onClick={() => { setShowPreview(false); }}
                                   className="self-end sm:self-auto text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
                                 >
                                   <X className="w-5 h-5 sm:w-6 sm:h-6" />
@@ -3467,7 +2528,6 @@ export default function TeacherPollRoom() {
                             <CardContent className="px-3 sm:px-6">
                               {generatedQuestions.length > 0 && (
                                 <div className="space-y-4">
-                                  {/* Question Navigation */}
                                   <div className="flex items-center justify-between gap-2 sm:gap-4">
                                     <Button
                                       variant="outline"
@@ -3482,14 +2542,11 @@ export default function TeacherPollRoom() {
                                       <ChevronLeft className="w-4 h-4 sm:w-5 sm:h-5" />
                                     </Button>
                                     <div className="flex-1">
-                                      {/* Card UI Content */}
                                       <div className="p-3 sm:p-4 md:p-6 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700 w-full max-h-[600px] sm:max-h-[550px] lg:max-h-[500px] flex flex-col">
                                         {/* Question */}
                                         <div className="mb-3 sm:mb-4 flex-shrink-0">
                                           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
-                                            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                                              Question
-                                            </label>
+                                            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Question</label>
                                             <div className="flex items-center gap-2 flex-wrap">
                                               <div className="text-l mr-2 text-gray-500 dark:text-gray-400 flex items-center gap-1 bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded-md">
                                                 <Users2 className="w-3 h-3" />
@@ -3497,22 +2554,8 @@ export default function TeacherPollRoom() {
                                               </div>
                                               {editingQuestion !== null ? (
                                                 <div className="flex gap-2">
-                                                  <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    onClick={() => setEditingQuestion(null)}
-                                                    className="text-xs h-7 sm:h-8 px-2 sm:px-3"
-                                                  >
-                                                    Cancel
-                                                  </Button>
-                                                  <Button
-                                                    variant="secondary"
-                                                    size="sm"
-                                                    onClick={() => handleSaveQuestionEdit()}
-                                                    className="text-xs h-7 sm:h-8 px-2 sm:px-3 bg-blue-600 hover:bg-blue-700 text-white"
-                                                  >
-                                                    Save
-                                                  </Button>
+                                                  <Button variant="outline" size="sm" onClick={() => setEditingQuestion(null)} className="text-xs h-7 sm:h-8 px-2 sm:px-3">Cancel</Button>
+                                                  <Button variant="secondary" size="sm" onClick={() => handleSaveQuestionEdit()} className="text-xs h-7 sm:h-8 px-2 sm:px-3 bg-blue-600 hover:bg-blue-700 text-white">Save</Button>
                                                 </div>
                                               ) : (
                                                 <div className="flex items-center gap-2">
@@ -3523,12 +2566,10 @@ export default function TeacherPollRoom() {
                                                     disabled={launchedQuestions.has(currentQuestionIndex)}
                                                     className="text-xs h-7 sm:h-8 px-2 sm:px-3 bg-white dark:bg-gray-800/50 border border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700/70"
                                                   >
-                                                    <Edit3 className="w-3 h-3 sm:w-3.5 sm:h-3.5 mr-1" />
-                                                    Edit
+                                                    <Edit3 className="w-3 h-3 sm:w-3.5 sm:h-3.5 mr-1" />Edit
                                                   </Button>
                                                 </div>
                                               )}
-
                                               <Button
                                                 variant="outline"
                                                 size="sm"
@@ -3538,7 +2579,7 @@ export default function TeacherPollRoom() {
                                                     title: 'are you sure you want to delete this question?',
                                                     description: 'This action cannot be undone.',
                                                     confirmText: 'Delete Question',
-                                                  })
+                                                  });
                                                   if (!confirmed) return;
                                                   const newQuestions = [...generatedQuestions];
                                                   newQuestions.splice(currentQuestionIndex, 1);
@@ -3573,38 +2614,22 @@ export default function TeacherPollRoom() {
                                         {/* Options */}
                                         <div className="flex-1 overflow-y-auto space-y-2 sm:space-y-3 py-2 -mx-2 px-2">
                                           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
-                                            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                                              Options
-                                            </label>
-                                            <span className="text-xs text-gray-500 dark:text-gray-400">
-                                              Click on an option to mark as correct
-                                            </span>
+                                            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Options</label>
+                                            <span className="text-xs text-gray-500 dark:text-gray-400">Click on an option to mark as correct</span>
                                           </div>
-
                                           <div className="space-y-2 overflow-y-auto pr-1">
                                             {getFilteredOptions(generatedQuestions[currentQuestionIndex].options).map((option, optionIndex) => {
-                                              // Find matching poll data by comparing questions and options
                                               const currentQuestion = generatedQuestions[currentQuestionIndex];
                                               const pollEntry = Object.entries(livePollResults).find(([_, poll]) => {
-                                                // Check if questions match (case insensitive and trimmed)
-                                                const questionsMatch = poll.question &&
-                                                  currentQuestion.question &&
+                                                const questionsMatch = poll.question && currentQuestion.question &&
                                                   poll.question.trim().toLowerCase() === currentQuestion.question.trim().toLowerCase();
-
-                                                // Check if options match (length and content)
                                                 const optionsMatch = poll.options &&
                                                   poll.options.length === currentQuestion.options.length &&
-                                                  poll.options.every((opt, i) =>
-                                                    opt.trim().toLowerCase() === currentQuestion.options[i]?.trim().toLowerCase()
-                                                  );
-
+                                                  poll.options.every((opt, i) => opt.trim().toLowerCase() === currentQuestion.options[i]?.trim().toLowerCase());
                                                 return questionsMatch || optionsMatch;
                                               });
-
                                               const pollData = pollEntry ? pollEntry[1] : null;
                                               const showResults = !!pollData;
-
-                                              // Get response data with proper fallbacks
                                               const responseCount = showResults ? (pollData.responses?.[optionIndex.toString()] || 0) : 0;
                                               const totalResponses = showResults ? (pollData.totalResponses || 0) : 0;
                                               const percentage = showResults && totalResponses > 0 ? (responseCount / totalResponses) * 100 : 0;
@@ -3620,34 +2645,22 @@ export default function TeacherPollRoom() {
                                                     : 'bg-gray-100/50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700/70'
                                                     } ${!isPollActive ? 'cursor-pointer' : 'cursor-not-allowed opacity-70'}`}
                                                 >
-                                                  {/* Progress bar background - only show if we have matching poll data */}
                                                   {showResults && (
                                                     <div
                                                       className="absolute inset-0 bg-green-100 dark:bg-green-900/30 rounded transition-all duration-500 ease-out"
-                                                      style={{
-                                                        width: `${percentage}%`,
-                                                        opacity: 0.3,
-                                                        transition: 'width 500ms ease-out'
-                                                      }}
+                                                      style={{ width: `${percentage}%`, opacity: 0.3, transition: 'width 500ms ease-out' }}
                                                     />
                                                   )}
-
                                                   <div className="relative z-10">
                                                     <div className="flex items-center gap-2 sm:gap-3">
-                                                      <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center ${isCorrect
-                                                        ? 'bg-green-500'
-                                                        : 'bg-gray-200 dark:bg-gray-600'
-                                                        }`}>
-                                                        <span className="text-white text-xs">
-                                                          {isCorrect ? '✓' : char}
-                                                        </span>
+                                                      <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center ${isCorrect ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-600'}`}>
+                                                        <span className="text-white text-xs">{isCorrect ? '✓' : char}</span>
                                                       </div>
-
                                                       {editingQuestion === currentQuestionIndex ? (
                                                         <Input
                                                           value={option}
                                                           onChange={(e) => handleOptionChange(optionIndex, e.target.value)}
-                                                          className="flex-1 bg-white/80 dark:bg-gray-800/80 border-0 border-b border-transparent focus-visible:ring-0 focus-visible:border-b-gray-300 dark:focus-visible:border-b-gray-600 text-sm sm:text-base"
+                                                          className="flex-1 bg-white/80 dark:bg-gray-800/80 border-0 border-b border-transparent focus-visible:ring-0 text-sm sm:text-base"
                                                           placeholder={`Option ${optionIndex + 1}`}
                                                           onClick={(e) => e.stopPropagation()}
                                                           disabled={isPollActive}
@@ -3657,26 +2670,16 @@ export default function TeacherPollRoom() {
                                                           {option || `Option ${optionIndex + 1} (empty)`}
                                                         </span>
                                                       )}
-
-                                                      {/* Response count and percentage - only show if we have matching poll data */}
                                                       {showResults && totalResponses > 0 && (
                                                         <div className="flex items-center gap-2 ml-2">
-                                                          <span className="text-xs font-medium text-gray-600 dark:text-gray-300 mr-2">
-                                                            {responseCount}
-                                                          </span>
+                                                          <span className="text-xs font-medium text-gray-600 dark:text-gray-300 mr-2">{responseCount}</span>
                                                           <div className="w-16 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                                                            <div
-                                                              className="h-full bg-green-500 transition-all duration-500 ease-out"
-                                                              style={{ width: `${percentage}%` }}
-                                                            />
+                                                            <div className="h-full bg-green-500 transition-all duration-500 ease-out" style={{ width: `${percentage}%` }} />
                                                           </div>
-                                                          <span className="text-xs font-medium text-gray-500 dark:text-gray-400 w-10 text-right">
-                                                            {Math.round(percentage)}%
-                                                          </span>
+                                                          <span className="text-xs font-medium text-gray-500 dark:text-gray-400 w-10 text-right">{Math.round(percentage)}%</span>
                                                         </div>
                                                       )}
                                                     </div>
-
                                                   </div>
                                                 </div>
                                               );
@@ -3686,9 +2689,6 @@ export default function TeacherPollRoom() {
 
                                         {/* Action Buttons */}
                                         <div className="mt-3 sm:mt-4 pt-3 sm:pt-4 border-t border-gray-200 dark:border-gray-700 flex flex-col lg:flex-row lg:justify-between gap-3 sm:gap-4 flex-shrink-0">
-
-
-                                          {/* Timer */}
                                           <div className="flex-1 lg:flex-initial">
                                             <label className="flex items-center text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 gap-1">
                                               <Clock className="w-4 h-4" />
@@ -3712,17 +2712,14 @@ export default function TeacherPollRoom() {
                                                       [currentQuestionIndex]: {
                                                         ...(prev[currentQuestionIndex] || { isActive: false, timeLeft: 0 }),
                                                         initialTime: newTime,
-                                                        timeLeft: prev[currentQuestionIndex]?.isActive
-                                                          ? Number(newTime)
-                                                          : (prev[currentQuestionIndex]?.timeLeft || 0)
+                                                        timeLeft: prev[currentQuestionIndex]?.isActive ? Number(newTime) : (prev[currentQuestionIndex]?.timeLeft || 0)
                                                       }
                                                     }));
                                                   }}
                                                   className="dark:bg-gray-800/50 text-sm w-full sm:w-36"
                                                   aria-label="Timer in seconds"
                                                   disabled={questionTimers[currentQuestionIndex]?.isActive ||
-                                                    (launchedQuestions.has(currentQuestionIndex) &&
-                                                      questionTimers[currentQuestionIndex]?.timeLeft === 0)}
+                                                    (launchedQuestions.has(currentQuestionIndex) && questionTimers[currentQuestionIndex]?.timeLeft === 0)}
                                                 />
                                               )}
                                             </div>
@@ -3734,9 +2731,7 @@ export default function TeacherPollRoom() {
                                           </div>
 
                                           <div className="flex-1 lg:flex-initial">
-                                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                              Max Points
-                                            </label>
+                                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Max Points</label>
                                             <Input
                                               type="number"
                                               value={maxPoints}
@@ -3746,9 +2741,7 @@ export default function TeacherPollRoom() {
                                               aria-label="Maximum points for this generated poll"
                                               disabled={launchedQuestions.has(currentQuestionIndex) || questionTimers[currentQuestionIndex]?.isActive}
                                             />
-                                            <p className="text-xs text-muted-foreground mt-1">
-                                              Maximum score awarded for a correct answer.
-                                            </p>
+                                            <p className="text-xs text-muted-foreground mt-1">Maximum score awarded for a correct answer.</p>
                                           </div>
 
                                           <Button
@@ -3779,10 +2772,8 @@ export default function TeacherPollRoom() {
                               )}
                             </CardContent>
                           </Card>
-                        )
-                        )}
+                        ))}
                       </div>
-
                     )}
                   </ScrollArea>
                 </div>
@@ -3802,9 +2793,9 @@ export default function TeacherPollRoom() {
                   </div>
                 )}
 
-                {/* Create Poll  */}
+                {/* Create Poll */}
                 {showPollModal && (
-                  <Card className=" m-10 p-10 flex flex-col bg-white/90 dark:bg-gray-900/90 border border-slate-200/80 dark:border-gray-700/80 shadow">
+                  <Card className="m-10 p-10 flex flex-col bg-white/90 dark:bg-gray-900/90 border border-slate-200/80 dark:border-gray-700/80 shadow">
                     <CardHeader>
                       <div className="flex items-center justify-between w-full gap-2">
                         <CardTitle className="text-lg sm:text-xl flex items-center gap-2">
@@ -3813,14 +2804,12 @@ export default function TeacherPollRoom() {
                         </CardTitle>
                       </div>
                     </CardHeader>
-
                     <CardContent className="space-y-5 overflow-y-auto">
                       {generatedQuestions.length > 0 && (
                         <section>
                           <h4 className="text-xs sm:text-sm font-semibold text-purple-600 dark:text-purple-400 mb-4">
                             Generated Questions (from AI)
                           </h4>
-
                           <ScrollArea className="h-[calc(100vh-300px)] w-full rounded-md p-2.5">
                             <div className="overflow-y-auto pr-2 flex-1">
                               <div className="space-y-4 mr-3">
@@ -3829,32 +2818,16 @@ export default function TeacherPollRoom() {
                                     key={idx}
                                     className="bg-card/90 border rounded-lg p-4 transition-all duration-300 ease-in-out transform relative hover:shadow-md border-gray-200 dark:border-gray-600"
                                   >
-                                    {/* Question Metadata */}
                                     <div className="flex items-center justify-between mb-3">
                                       <div className="flex items-center gap-2">
                                         <span className="bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-2 py-1 rounded-full text-xs font-medium">
                                           AI Generated
                                         </span>
                                       </div>
-                                      {/* <Button
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-8 px-3 text-xs border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
-                                        onClick={() => selectGeneratedQuestion(q)}
-                                      >
-                                        <Check className="w-3 h-3 mr-1" />
-                                        Use This
-                                      </Button> */}
                                     </div>
-
-                                    {/* Question Text */}
                                     <div className="mb-4">
-                                      <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-relaxed">
-                                        {q.question}
-                                      </h4>
+                                      <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-relaxed">{q.question}</h4>
                                     </div>
-
-                                    {/* Answer Options */}
                                     <div className="space-y-2">
                                       <div className="grid grid-cols-1 gap-2">
                                         {q.options.map((opt, i) => (
@@ -3865,20 +2838,14 @@ export default function TeacherPollRoom() {
                                               : 'bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-300'
                                               }`}
                                           >
-                                            <div className={`w-4 h-4 rounded-full flex items-center justify-center ${i === q.correctOptionIndex
-                                              ? 'bg-green-500'
-                                              : 'bg-gray-300 dark:bg-gray-600'
-                                              }`}>
-                                              <span className="text-white text-xs">
-                                                {i === q.correctOptionIndex ? '✓' : String.fromCharCode(97 + i).toUpperCase()}
-                                              </span>
+                                            <div className={`w-4 h-4 rounded-full flex items-center justify-center ${i === q.correctOptionIndex ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'}`}>
+                                              <span className="text-white text-xs">{i === q.correctOptionIndex ? '✓' : String.fromCharCode(97 + i).toUpperCase()}</span>
                                             </div>
                                             <span>{opt}</span>
                                           </div>
                                         ))}
                                       </div>
                                     </div>
-
                                     <div className="absolute -right-4.5 top-1/2 transform -translate-y-1/2 flex flex-col gap-1">
                                       <Button
                                         variant="ghost"
@@ -3910,9 +2877,7 @@ export default function TeacherPollRoom() {
                       )}
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                          Poll question
-                        </label>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Poll question</label>
                         <Input
                           placeholder="Enter your poll question"
                           value={question}
@@ -3920,16 +2885,13 @@ export default function TeacherPollRoom() {
                           className="dark:bg-gray-800/50 text-sm"
                           aria-label="Poll question"
                         />
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                          Enter the question students will answer.
-                        </p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Enter the question students will answer.</p>
                       </div>
 
                       <fieldset className="space-y-3">
                         <legend className="text-sm font-medium text-gray-600 mb-2 dark:text-gray-400">
                           Poll options (choose correct/right option)
                         </legend>
-
                         {options.map((opt, i) => (
                           <div key={i} className="flex items-center gap-3">
                             <input
@@ -3952,16 +2914,12 @@ export default function TeacherPollRoom() {
                             />
                           </div>
                         ))}
-                        <p className="text-xs text-gray-500 dark:text-gray-400">
-                          Tip: Provide at least 2 meaningful options for a valid poll.
-                        </p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">Tip: Provide at least 2 meaningful options for a valid poll.</p>
                       </fieldset>
 
-                      {/* Timer */}
                       <div>
                         <label className="flex items-center text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 gap-1">
-                          <Clock className="w-4 h-4" />
-                          Timer (seconds)
+                          <Clock className="w-4 h-4" />Timer (seconds)
                         </label>
                         <div className="flex items-center gap-2">
                           <Input
@@ -3984,15 +2942,11 @@ export default function TeacherPollRoom() {
                             aria-label="Timer in seconds"
                           />
                         </div>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          The timer controls how long the poll remains open for students to vote.
-                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">The timer controls how long the poll remains open for students to vote.</p>
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                          Max Points
-                        </label>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Max Points</label>
                         <Input
                           type="number"
                           value={maxPoints}
@@ -4001,28 +2955,20 @@ export default function TeacherPollRoom() {
                           className="dark:bg-gray-800/50 text-sm w-36"
                           aria-label="Maximum points for this poll"
                         />
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Maximum score awarded for a correct answer.
-                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">Maximum score awarded for a correct answer.</p>
                       </div>
 
-                      {/* Actions */}
                       <div className="flex flex-col xs:flex-row gap-2 sm:gap-4">
                         <Button
                           onClick={createPoll}
                           disabled={!question || options.filter((opt) => opt.trim()).length < 2 || roomControlMode === 'poll-disabled'}
                           className="bg-gradient-to-r from-purple-500 to-blue-500 text-white hover:from-purple-600 hover:to-blue-600 flex-1 text-sm"
-                          aria-disabled={!question || options.filter((opt) => opt.trim()).length < 2}
                         >
                           Create Poll
                         </Button>
-
                         <Button
                           variant="outline"
-                          onClick={() => {
-                            fetchResults();
-                            handlePollResultsbutton()
-                          }}
+                          onClick={() => { fetchResults(); handlePollResultsbutton(); }}
                           className="flex-1 border-purple-500 text-purple-600 hover:bg-purple-50 hover:text-purple-700 dark:border-purple-400 dark:text-purple-300 dark:hover:bg-purple-900/30 text-sm"
                         >
                           Fetch Results
@@ -4032,357 +2978,248 @@ export default function TeacherPollRoom() {
                   </Card>
                 )}
 
-                {/*  Poll Results  */}
-                {
-                  showResultsModal && (
-                    <Card className="m-10 p-10 flex flex-col bg-white/90 dark:bg-gray-900/90 border border-slate-200/80 dark:border-gray-700/80 shadow h-[900px]">
-                      <CardHeader className="flex-shrink-0 pb-3">
-                        <div className="flex items-center justify-between">
-                          <CardTitle className="text-lg sm:text-xl flex items-center gap-2">
-                            <BarChart2 className="w-5 h-5 text-purple-500" />
-                            Poll Results
-                          </CardTitle>
-                          <div className="flex items-center gap-2">
-                            {Object.keys(pollResults).length > 0 && (
-                              <Button
-                                onClick={fetchResults}
-                                variant="outline"
-                                size="sm"
-                                className="border-purple-500 text-purple-600 hover:bg-purple-50 hover:text-purple-700 dark:border-purple-400 dark:text-purple-300 dark:hover:bg-purple-900/30 text-xs sm:text-sm"
-                              >
-                                Refresh Results
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      </CardHeader>
-
-                      <CardContent className="flex-1 overflow-hidden flex flex-col">
-                        {Object.keys(pollResults).length === 0 ? (
-                          <div className="flex flex-col items-center justify-center py-12 text-center h-full">
-                            <div className="w-16 h-16 mb-4 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
-                              <Users className="w-8 h-8 text-gray-400 dark:text-gray-500" />
-                            </div>
-                            <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2">
-                              No poll results yet
-                            </h3>
-                            <p className="text-gray-500 dark:text-gray-400 mb-4">
-                              Poll results will appear here once students submit their responses.
-                            </p>
+                {/* Poll Results */}
+                {showResultsModal && (
+                  <Card className="m-10 p-10 flex flex-col bg-white/90 dark:bg-gray-900/90 border border-slate-200/80 dark:border-gray-700/80 shadow h-[900px]">
+                    <CardHeader className="flex-shrink-0 pb-3">
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-lg sm:text-xl flex items-center gap-2">
+                          <BarChart2 className="w-5 h-5 text-purple-500" />
+                          Poll Results
+                        </CardTitle>
+                        <div className="flex items-center gap-2">
+                          {Object.keys(pollResults).length > 0 && (
                             <Button
                               onClick={fetchResults}
                               variant="outline"
-                              className="border-purple-500 text-purple-600 hover:bg-purple-50 hover:text-purple-700 dark:border-purple-400 dark:text-purple-300 dark:hover:bg-purple-900/30"
+                              size="sm"
+                              className="border-purple-500 text-purple-600 hover:bg-purple-50 hover:text-purple-700 dark:border-purple-400 dark:text-purple-300 dark:hover:bg-purple-900/30 text-xs sm:text-sm"
                             >
-                              Check for Results
+                              Refresh Results
                             </Button>
+                          )}
+                        </div>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="flex-1 overflow-hidden flex flex-col">
+                      {Object.keys(pollResults).length === 0 ? (
+                        <div className="flex flex-col items-center justify-center py-12 text-center h-full">
+                          <div className="w-16 h-16 mb-4 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                            <Users className="w-8 h-8 text-gray-400 dark:text-gray-500" />
                           </div>
-                        ) : (
-                          <ScrollArea className="h-full w-full">
-                            <div className="overflow-y-auto pr-2 flex-1">
-                              <div className="space-y-4">
-                                {Object.entries(pollResults ?? {})
-                                  .reverse()
-                                  .map(([pollQuestion, options]) => {
-                                    const totalVotes = Object.values(options ?? {}).reduce((sum, data) => sum + data.count, 0);
-                                    const isShowingNames = showMemberNames[pollQuestion] !== false;
+                          <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2">No poll results yet</h3>
+                          <p className="text-gray-500 dark:text-gray-400 mb-4">Poll results will appear here once students submit their responses.</p>
+                          <Button
+                            onClick={fetchResults}
+                            variant="outline"
+                            className="border-purple-500 text-purple-600 hover:bg-purple-50 hover:text-purple-700 dark:border-purple-400 dark:text-purple-300 dark:hover:bg-purple-900/30"
+                          >
+                            Check for Results
+                          </Button>
+                        </div>
+                      ) : (
+                        <ScrollArea className="h-full w-full">
+                          <div className="overflow-y-auto pr-2 flex-1">
+                            <div className="space-y-4">
+                              {Object.entries(pollResults ?? {})
+                                .reverse()
+                                .map(([pollQuestion, options]) => {
+                                  const totalVotes = Object.values(options ?? {}).reduce((sum, data) => sum + data.count, 0);
+                                  const isShowingNames = showMemberNames[pollQuestion] !== false;
+                                  const sortedOptions = Object.entries(options ?? {}).sort((a, b) => b[1].count - a[1].count);
+                                  const topCount = sortedOptions?.[0]?.[1]?.count ?? 0;
 
-                                    const sortedOptions = Object.entries(options ?? {}).sort((a, b) => b[1].count - a[1].count);
-                                    const topCount = sortedOptions?.[0]?.[1]?.count ?? 0;
-
-                                    return (
-                                      <Card
-                                        key={pollQuestion}
-                                        className="bg-white/80 dark:bg-gray-800/80 border border-slate-200/70 dark:border-gray-700/70 flex-shrink-0"
-                                      >
-                                        <CardHeader className="pb-3">
-                                          <div className="flex items-start justify-between gap-2">
-                                            <CardTitle className="text-sm sm:text-base text-gray-800 dark:text-gray-200 line-clamp-2">
-                                              {pollQuestion}
-                                            </CardTitle>
-
-                                            <div className="flex items-center gap-2 flex-shrink-0">
-                                              <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
-                                                {totalVotes} vote{totalVotes !== 1 ? "s" : ""}
-                                              </span>
-
-                                              <Button
-                                                onClick={() => toggleMemberNames(pollQuestion)}
-                                                variant="ghost"
-                                                size="sm"
-                                                className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 p-1"
-                                                title={isShowingNames ? "Hide member names" : "Show member names"}
-                                              >
-                                                {isShowingNames ? <Eye size={16} /> : <EyeOff size={16} />}
-                                              </Button>
-                                            </div>
+                                  return (
+                                    <Card key={pollQuestion} className="bg-white/80 dark:bg-gray-800/80 border border-slate-200/70 dark:border-gray-700/70 flex-shrink-0">
+                                      <CardHeader className="pb-3">
+                                        <div className="flex items-start justify-between gap-2">
+                                          <CardTitle className="text-sm sm:text-base text-gray-800 dark:text-gray-200 line-clamp-2">
+                                            {pollQuestion}
+                                          </CardTitle>
+                                          <div className="flex items-center gap-2 flex-shrink-0">
+                                            <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
+                                              {totalVotes} vote{totalVotes !== 1 ? "s" : ""}
+                                            </span>
+                                            <Button
+                                              onClick={() => toggleMemberNames(pollQuestion)}
+                                              variant="ghost"
+                                              size="sm"
+                                              className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 p-1"
+                                              title={isShowingNames ? "Hide member names" : "Show member names"}
+                                            >
+                                              {isShowingNames ? <Eye size={16} /> : <EyeOff size={16} />}
+                                            </Button>
                                           </div>
-                                        </CardHeader>
-
-                                        <CardContent className="pt-0">
-                                          <div className="space-y-3">
-                                            {Object.entries(options ?? {}).map(([opt, data]) => {
-                                              const percentage = totalVotes > 0 ? ((data.count / totalVotes) * 100).toFixed(1) : "0";
-                                              const isTop = data.count === topCount && topCount > 0;
-
-                                              return (
-                                                <div key={opt} className="space-y-2">
-                                                  <div className="flex items-center justify-between gap-3">
-                                                    <div className="flex items-center gap-2 flex-1 min-w-0">
-                                                      <span className="font-medium text-purple-600 dark:text-purple-400 text-xs sm:text-sm flex-shrink-0">
-                                                        {opt}
-                                                        {isTop && (
-                                                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
-                                                            Top
-                                                          </span>
-                                                        )}
-                                                      </span>
-
-                                                      <div className="flex-1 bg-gray-200 dark:bg-gray-700 rounded-full h-2 min-w-0">
-                                                        <div
-                                                          className="bg-gradient-to-r from-purple-500 to-blue-500 h-2 rounded-full transition-all duration-500 ease-out"
-                                                          style={{ width: `${percentage}%` }}
-                                                        />
-                                                      </div>
-                                                    </div>
-
-                                                    <div className="flex items-center gap-2 flex-shrink-0 ml-2">
-                                                      <span className="text-gray-700 dark:text-gray-300 font-medium text-xs sm:text-sm">
-                                                        {data.count}
-                                                      </span>
-                                                      <span className="text-gray-500 dark:text-gray-400 text-xs">({percentage}%)</span>
+                                        </div>
+                                      </CardHeader>
+                                      <CardContent className="pt-0">
+                                        <div className="space-y-3">
+                                          {Object.entries(options ?? {}).map(([opt, data]) => {
+                                            const percentage = totalVotes > 0 ? ((data.count / totalVotes) * 100).toFixed(1) : "0";
+                                            const isTop = data.count === topCount && topCount > 0;
+                                            return (
+                                              <div key={opt} className="space-y-2">
+                                                <div className="flex items-center justify-between gap-3">
+                                                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                                                    <span className="font-medium text-purple-600 dark:text-purple-400 text-xs sm:text-sm flex-shrink-0">
+                                                      {opt}
+                                                      {isTop && (
+                                                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
+                                                          Top
+                                                        </span>
+                                                      )}
+                                                    </span>
+                                                    <div className="flex-1 bg-gray-200 dark:bg-gray-700 rounded-full h-2 min-w-0">
+                                                      <div
+                                                        className="bg-gradient-to-r from-purple-500 to-blue-500 h-2 rounded-full transition-all duration-500 ease-out"
+                                                        style={{ width: `${percentage}%` }}
+                                                      />
                                                     </div>
                                                   </div>
-
-                                                  {isShowingNames && data.users.length > 0 ? (
-                                                    <div className="ml-4 pl-2 border-l-2 border-purple-200 dark:border-purple-700">
-                                                      <div className="flex flex-wrap gap-1 mt-1">
-                                                        {data.users.map((user: any, userIndex: number) => (
-                                                          <span
-                                                            key={userIndex}
-                                                            className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-700"
-                                                          >
-                                                            <Users size={10} className="mr-1" />
-                                                            {user.name}
-                                                          </span>
-                                                        ))}
-                                                      </div>
-                                                    </div>
-                                                  ) : data.users.length > 0 ? (
-                                                    <div className="ml-4 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
-                                                      <Users size={12} />
-                                                      <span>{data.users.length} member{data.users.length !== 1 ? "s" : ""}</span>
-                                                    </div>
-                                                  ) : null}
+                                                  <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                                                    <span className="text-gray-700 dark:text-gray-300 font-medium text-xs sm:text-sm">{data.count}</span>
+                                                    <span className="text-gray-500 dark:text-gray-400 text-xs">({percentage}%)</span>
+                                                  </div>
                                                 </div>
-                                              );
-                                            })}
-                                          </div>
-                                        </CardContent>
-                                      </Card>
-                                    );
-                                  })}
-                              </div>
+                                                {isShowingNames && data.users.length > 0 ? (
+                                                  <div className="ml-4 pl-2 border-l-2 border-purple-200 dark:border-purple-700">
+                                                    <div className="flex flex-wrap gap-1 mt-1">
+                                                      {data.users.map((user: any, userIndex: number) => (
+                                                        <span
+                                                          key={userIndex}
+                                                          className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-700"
+                                                        >
+                                                          <Users size={10} className="mr-1" />
+                                                          {user.name}
+                                                        </span>
+                                                      ))}
+                                                    </div>
+                                                  </div>
+                                                ) : data.users.length > 0 ? (
+                                                  <div className="ml-4 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                                                    <Users size={12} />
+                                                    <span>{data.users.length} member{data.users.length !== 1 ? "s" : ""}</span>
+                                                  </div>
+                                                ) : null}
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      </CardContent>
+                                    </Card>
+                                  );
+                                })}
                             </div>
-                          </ScrollArea>
-                        )}
-                      </CardContent>
-                    </Card>
-                  )}
+                          </div>
+                        </ScrollArea>
+                      )}
+                    </CardContent>
+                  </Card>
+                )}
               </div>
-
-
-              {/* <ShowStudentsModal
-        isOpen={showStudentsModal}
-        onClose={() => setShowStudentsModal(false)}
-        students={students}
-      /> */}
-
-
-              <Modal
-                show={showRecordModal}
-                title={"Record with Whisper AI"}
-                content={
-                  <>
-                    <p className="mb-4">Record audio using your microphone with Whisper AI transcription</p>
-                    <AudioRecorder
-                      onRecordingComplete={handleAudioFromRecording}
-                      onAudioStream={handleLiveAudioStream}
-                      enableLiveTranscription={true}
-                    />
-                    {whisperAiText?.length >= 1 && (
-                      <textarea
-                        className="w-full mt-3 p-2 text-sm border rounded-md bg-gray-50 mb-5"
-                        rows={4}
-                        readOnly
-                        value={whisperAiText}
-                      />
-                    )}
-                    {audioBlob && isTranscriptionComplete && (
-                      <div className="mt-4 p-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md">
-                        <p className="text-green-800 dark:text-green-400 text-sm flex items-center">
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                          Recording complete! Click "Load" to process with Whisper AI
-                        </p>
-                      </div>
-                    )}
-                    {!isTranscriptionComplete && audioBlob && (
-                      <div className="mt-4 p-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md">
-                        <p className="text-blue-800 dark:text-blue-400 text-sm flex items-center">
-                          <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                          Finalizing transcription...
-                        </p>
-                      </div>
-                    )}
-                  </>
-                }
-                onClose={() => {
-                  setShowRecordModal(false);
-                  setAudioBlob(undefined);
-                  setIsLiveRecordingActive(false);
-                  setShouldProcessTranscript(false);
-                  setIsTranscriptionComplete(false);
-                }}
-                submitText={"Load"}
-                submitEnabled={
-                  isTranscriptionComplete
-
-                }
-
-                onSubmit={() => {
-                  processAudioBlob();
-                  setAudioBlob(undefined);
-                  setIsLiveRecordingActive(false);
-                  setShouldProcessTranscript(true);
-                  setIsTranscriptionComplete(false);
-
-                }}
-              />
-              <Modal
-                show={showExternalModal}
-                title={"Record with External API"}
-                content={
-                  <>
-                    <p className="mb-4">Record audio using your microphone with External API transcription</p>
-                    <AudioRecorder
-                      onRecordingComplete={handleAudioFromRecording}
-                      onAudioStream={handleLiveAudioStreamForExternalAPI}
-                      enableLiveTranscription={true}
-                      transcribeModel="external-api"
-                    />
-                    {transcribedTextFromExternal.length >= 1 && (
-                      <textarea
-                        className="w-full mt-3 p-2 text-sm border rounded-md bg-gray-50 mb-5"
-                        rows={4}
-                        readOnly
-                        value={transcribedTextFromExternal}
-                      />
-                    )}
-
-                    {audioBlob && (
-                      <div className="mt-4 p-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md">
-                        <p className="text-green-800 dark:text-green-400 text-sm flex items-center">
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                          Recording complete! Click "Load" to process with Whisper AI
-                        </p>
-                      </div>
-                    )}
-
-                  </>
-                }
-                onClose={() => {
-                  setShowExternalModal(false);
-                  setAudioBlob(undefined);
-                  setIsLiveRecordingActive(false);
-                  setShouldProcessTranscript(false);
-
-                }}
-                submitText={"Load"}
-                submitEnabled={audioBlob !== undefined}
-                onSubmit={() => {
-                  processAudioBlobForExternalAPi();
-                  setAudioBlob(undefined);
-                  setIsLiveRecordingActive(false);
-                  setShouldProcessTranscript(true);
-                  setShowExternalModal(false);
-
-
-                }}
-              />
-              {/*  <Modal
-          show={showGGMLRecordModel}
-          title={"Record with Whisper GGML"}
-          content={
-            <>
-              <p className="mb-4">Record audio using your microphone with Whisper GGML transcription</p>
-              <AudioManager
-                              key={audioManagerKey}
-                              transcriber={transcriber}
-                              enableLiveTranscription={ useWhisperGGML}
-                              onLiveRecordingStart={() => setIsLiveRecordingActive(true)}
-                              onLiveRecordingStop={() => {
-                                setIsLiveRecordingActive(false);
-                                setLocalVoiceActivity(false);
-                                setIsTranscriptionSettling(true);
-                                    // Wait for final chunks to process (2-3 seconds)
-                                setTimeout(() => {
-                                  setIsTranscriptionSettling(false);
-                                }, 2500); // 2.5 seconds delay
-                              }}
-                              onVoiceActivityChange={(active) => {
-                                setLocalVoiceActivity(active);
-                              }}
-                              onRecordingComplete={handleAudioFromRecording}
-                              onClearTranscription={handleClearAll}
-                            />
-              {audioBlob && (
-                <div className="mt-4 p-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md">
-                  <p className="text-green-800 dark:text-green-400 text-sm flex items-center">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                    </svg>
-                    Recording complete! Click "Load" to process with Whisper AI
-                  </p>
-                </div>
-              )}
-            </>
-          }
-          onClose={() => {
-            setShowGGMLRecordModel(false);
-            setAudioBlob(undefined);
-            setIsLiveRecordingActive(false);
-            setShouldProcessTranscript(false);
-            setIsTranscriptionSettling(false);
-          }}
-          submitText={"Load"}
-          
-          submitEnabled={
-            !!(
-              audioBlob !== undefined && 
-              !isLiveRecordingActive && 
-              !isTranscriptionSettling &&
-              (transcriber.output?.text?.trim() || transcript?.trim() || displayTranscript?.trim())
-            )
-          }
-          onSubmit={() => {
-            processAudioBlob();
-            setAudioBlob(undefined);
-            setIsLiveRecordingActive(false);
-           // generateQuestions()
-           setIsTranscriptionSettling(false);
-           setShouldProcessTranscript(true);
-           
-           
-          }}
-        />*/}
             </div>
           </div>
         </div>
       </div>
+
+      {/* Whisper AI Modal */}
+      <Modal
+        show={showRecordModal}
+        title={"Record with Whisper AI"}
+        content={
+          <>
+            <p className="mb-4">Record audio using your microphone with Whisper AI transcription</p>
+            <AudioRecorder
+              onRecordingComplete={handleAudioFromRecording}
+              onAudioStream={handleLiveAudioStream}
+              enableLiveTranscription={true}
+            />
+            {whisperAiText?.length >= 1 && (
+              <textarea className="w-full mt-3 p-2 text-sm border rounded-md bg-gray-50 mb-5" rows={4} readOnly value={whisperAiText} />
+            )}
+            {audioBlob && isTranscriptionComplete && (
+              <div className="mt-4 p-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md">
+                <p className="text-green-800 dark:text-green-400 text-sm flex items-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Recording complete! Click "Load" to process with Whisper AI
+                </p>
+              </div>
+            )}
+            {!isTranscriptionComplete && audioBlob && (
+              <div className="mt-4 p-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md">
+                <p className="text-blue-800 dark:text-blue-400 text-sm flex items-center">
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                  Finalizing transcription...
+                </p>
+              </div>
+            )}
+          </>
+        }
+        onClose={() => {
+          setShowRecordModal(false);
+          setAudioBlob(undefined);
+          setIsLiveRecordingActive(false);
+          setShouldProcessTranscript(false);
+          setIsTranscriptionComplete(false);
+        }}
+        submitText={"Load"}
+        submitEnabled={isTranscriptionComplete}
+        onSubmit={() => {
+          processAudioBlob();
+          setAudioBlob(undefined);
+          setIsLiveRecordingActive(false);
+          setShouldProcessTranscript(true);
+          setIsTranscriptionComplete(false);
+        }}
+      />
+
+      {/* External API Modal */}
+      <Modal
+        show={showExternalModal}
+        title={"Record with External API"}
+        content={
+          <>
+            <p className="mb-4">Record audio using your microphone with External API transcription</p>
+            <AudioRecorder
+              onRecordingComplete={handleAudioFromRecording}
+              onAudioStream={handleLiveAudioStreamForExternalAPI}
+              enableLiveTranscription={true}
+              transcribeModel="external-api"
+            />
+            {transcribedTextFromExternal.length >= 1 && (
+              <textarea className="w-full mt-3 p-2 text-sm border rounded-md bg-gray-50 mb-5" rows={4} readOnly value={transcribedTextFromExternal} />
+            )}
+            {audioBlob && (
+              <div className="mt-4 p-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md">
+                <p className="text-green-800 dark:text-green-400 text-sm flex items-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Recording complete! Click "Load" to process
+                </p>
+              </div>
+            )}
+          </>
+        }
+        onClose={() => {
+          setShowExternalModal(false);
+          setAudioBlob(undefined);
+          setIsLiveRecordingActive(false);
+          setShouldProcessTranscript(false);
+        }}
+        submitText={"Load"}
+        submitEnabled={audioBlob !== undefined}
+        onSubmit={() => {
+          processAudioBlobForExternalAPi();
+          setAudioBlob(undefined);
+          setIsLiveRecordingActive(false);
+          setShouldProcessTranscript(true);
+          setShowExternalModal(false);
+        }}
+      />
+
       <ConfirmationModal {...modalProps} />
     </div>
   );

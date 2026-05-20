@@ -182,42 +182,6 @@ export default function AudioRecorder(props: {
         }
        
     };
-    const processRemainingChunks = async () => {
-        if (!props.onAudioStream || streamChunksRef.current.length === 0) return;
-        
-        // Only process the remaining unprocessed audio
-        const totalLength = streamChunksRef.current.reduce(
-            (sum, arr) => sum + arr.length,
-            0
-        );
-        
-        // If there's nothing substantial to process, skip it
-        if (totalLength < Constants.SAMPLING_RATE * 0.5) {
-            console.log("Remaining audio too short, skipping final transcription");
-            return;
-        }
-        
-        const combinedArray = new Float32Array(totalLength);
-        let offset = 0;
-        for (const chunk of streamChunksRef.current) {
-            combinedArray.set(chunk, offset);
-            offset += chunk.length;
-        }
-        
-        // Create AudioBuffer from the remaining audio only
-        const audioBuffer = audioContextRef.current!.createBuffer(
-            1,
-            combinedArray.length,
-            Constants.SAMPLING_RATE
-        );
-        audioBuffer.getChannelData(0).set(combinedArray);
-        
-        // Send only the remaining portion to transcriber
-        if (!props.transcribeModel) {
-            props.onAudioStream(audioBuffer);
-        }
-    };
-
     const stopRecording = async() => {
         if (
             mediaRecorderRef.current &&
@@ -226,10 +190,9 @@ export default function AudioRecorder(props: {
             mediaRecorderRef.current.stop();
             setDuration(0);
             setRecording(false);
-            // Process any remaining chunks before cleanup
+            // Process the complete recording for transcription
             if (props.enableLiveTranscription) {
-               // await processFinalChunks();
-                await processRemainingChunks();
+                await processFinalChunks();
             }
             // Clean up audio processing
             if (processorRef.current) {

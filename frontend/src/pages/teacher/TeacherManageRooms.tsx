@@ -63,10 +63,11 @@ export default function ManageRoom() {
                 setError(null);
                 const response = await api.get(`/livequizzes/rooms/teacher/${user.uid}`);
 
-                const data = await response.data;
+                const roomsData = response.data?.rooms ?? response.data;
+                const roomsArray = Array.isArray(roomsData) ? roomsData : [];
 
                 // Sort rooms: active first, then ended
-                const sortedRooms = data.sort((a: Room, b: Room) => {
+                const sortedRooms = roomsArray.sort((a: Room, b: Room) => {
                     // Active rooms come first
                     if (a.status === 'active' && b.status === 'ended') return -1;
                     if (a.status === 'ended' && b.status === 'active') return 1;

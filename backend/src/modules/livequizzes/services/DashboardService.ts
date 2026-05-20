@@ -7,8 +7,21 @@ import UserRoomStats from '#root/shared/database/models/UserRoomStats.js';
 @injectable()
 export class DashboardService {
     async getStudentDashboardData(studentId: string) {
-       
         const joinedRooms = await Room.find({ joinedStudents: studentId }).lean();
+        const userAchievements = await UserAchievement.find({ userId: studentId }).populate('badgeId').lean();
+        const allBadges = await Badge.find().lean();
+
+        const earnedBadgeIds = new Set(userAchievements.map((achievement: any) => achievement.badgeId?._id?.toString() || achievement.badgeId?.toString()));
+        const badgeCountByRoom: Record<string, number> = {};
+        userAchievements.forEach((achievement: any) => {
+            if (achievement.roomCode) {
+                badgeCountByRoom[achievement.roomCode] = (badgeCountByRoom[achievement.roomCode] || 0) + 1;
+            }
+        });
+
+        const nextBadge = allBadges
+            .filter((badge) => !earnedBadgeIds.has(badge._id.toString()))
+            .sort((a, b) => (a.rule?.threshold ?? 0) - (b.rule?.threshold ?? 0))[0] || null;
 
         let totalPolls = 0;
         let takenPolls = 0;
@@ -16,102 +29,137 @@ export class DashboardService {
         let unattemptedPolls = 0;
         let totalScore = 0;
         let totalMaxPoints = 0;
-
+        let responseTimes: number[] = [];
 
         let pollResults: any[] = [];
         let pollDetails: any[] = [];
         let activePolls: any[] = [];
-        let upcomingPolls: any[] = [];  // leave empty if you don’t have upcoming logic
+        let upcomingPolls: any[] = [];
         let scoreProgression: any[] = [];
         let roomWiseScores: any[] = [];
+        let questionHistory: any[] = [];
+        let sessionAnalytics: any[] = [];
 
         for (const room of joinedRooms) {
-
             let roomScore = 0;
             let roomMaxPoints = 0;
             let attendedPolls = 0;
             let roomUnattemptedPolls = 0;
+            let roomAbsentPolls = 0;
+            let roomResponseTimes: number[] = [];
 
             for (const poll of room.polls ?? []) {
                 totalPolls++;
-
                 const answer = poll.answers?.find((a: any) => a.userId === studentId);
+                const maxPoints = poll.maxPoints ?? 20;
+                const questionText = poll.question || 'Untitled Poll';
+                const createdAt = poll.createdAt ? new Date(poll.createdAt) : new Date();
+                const answeredAt = answer?.answeredAt ? new Date(answer.answeredAt) : null;
+                const responseTime = answeredAt ? Math.max(0, Math.round((answeredAt.getTime() - createdAt.getTime()) / 1000)) : null;
+
                 if (answer) {
                     takenPolls++;
                     attendedPolls++;
-
                     const score = answer.points ?? 0;
-                    const maxPoints = poll.maxPoints ?? 20;
                     roomScore += score;
                     roomMaxPoints += maxPoints;
                     totalScore += score;
                     totalMaxPoints += maxPoints;
+                    if (responseTime !== null) {
+                        responseTimes.push(responseTime);
+                        roomResponseTimes.push(responseTime);
+                    }
 
-                    // Add to pollResults
                     pollResults.push({
-                        name: poll.question || 'Untitled Poll',
+                        name: questionText,
                         score,
-                        maxPoints: maxPoints,
+                        maxPoints,
                         points: answer.points ?? 0,
-                        date: poll.createdAt || new Date()
+                        date: createdAt
                     });
 
-                    // For score progression chart
                     scoreProgression.push({
-                        poll: poll.question || 'Poll',
+                        poll: questionText,
                         score: answer.points ?? 0,
-                        maxPoints: poll.maxPoints ?? 20
+                        maxPoints
                     });
                 } else {
-                    // No answer - check if poll was missed
-                    if (!(poll.lockedActiveUsers ?? []).includes(studentId)) {
-                        // Absent: student was not present when poll launched
+                    const wasPresent = (poll.lockedActiveUsers ?? []).includes(studentId);
+                    if (!wasPresent) {
                         absentPolls++;
+                        roomAbsentPolls++;
                     } else {
-                        // Unattempted: student was present but didn't answer
                         unattemptedPolls++;
                         roomUnattemptedPolls++;
-                        const maxPoints = poll.maxPoints ?? 20;
                         roomMaxPoints += maxPoints;
                         totalMaxPoints += maxPoints;
-
                         pollResults.push({
-                            name: poll.question || 'Untitled Poll',
+                            name: questionText,
                             score: 0,
-                            maxPoints: maxPoints,
+                            maxPoints,
                             points: 0,
-                            date: poll.createdAt || new Date()
+                            date: createdAt
                         });
 
                         scoreProgression.push({
-                            poll: poll.question || 'Poll',
+                            poll: questionText,
                             score: 0,
-                            maxPoints: poll.maxPoints ?? 20
+                            maxPoints
                         });
                     }
                 }
 
-                // Always add poll details
+                questionHistory.push({
+                    pollId: poll._id,
+                    roomName: room.name,
+                    roomCode: room.roomCode,
+                    question: questionText,
+                    options: poll.options || [],
+                    selectedAnswerIndex: answer?.answerIndex ?? null,
+                    selectedAnswer: answer ? poll.options?.[answer.answerIndex] ?? null : null,
+                    correctAnswerIndex: poll.correctOptionIndex ?? -1,
+                    correctAnswer: poll.options?.[poll.correctOptionIndex] ?? 'N/A',
+                    points: answer?.points ?? 0,
+                    maxPoints,
+                    isCorrect: answer ? answer.answerIndex === poll.correctOptionIndex : false,
+                    answeredAt: answeredAt?.toISOString() || null,
+                    responseTimeSeconds: responseTime,
+                    answeredStatus: answer ? (answer.answerIndex === poll.correctOptionIndex ? 'correct' : 'incorrect') : ((poll.lockedActiveUsers ?? []).includes(studentId) ? 'unanswered' : 'absent'),
+                    date: createdAt.toISOString()
+                });
+
                 pollDetails.push({
-                    title: poll.question || 'Untitled Poll',
-                    type: 'MCQ',           // fixed value, since no type field
+                    title: questionText,
+                    type: 'MCQ',
                     timer: poll.timer?.toString() || 'N/A'
                 });
 
-                // Active polls: based on room.status
                 if (room.status === 'active') {
                     activePolls.push({
-                        name: poll.question || 'Active Poll',
+                        name: questionText,
                         status: 'Ongoing'
                     });
                 }
-
-                // (optional) upcoming polls: you could add logic if you store startTime
             }
 
-            // Add room-wise score if student has any activity in the room (taken or unattempted polls)
             if (attendedPolls > 0 || roomUnattemptedPolls > 0) {
                 const avgScore = roomMaxPoints > 0 ? Math.round((roomScore / roomMaxPoints) * 100) : 0;
+                const roomResponseAverage = roomResponseTimes.length > 0 ? Math.round(roomResponseTimes.reduce((sum, time) => sum + time, 0) / roomResponseTimes.length) : 0;
+                sessionAnalytics.push({
+                    roomName: room.name,
+                    roomCode: room.roomCode,
+                    totalPolls: room.polls.length,
+                    taken: attendedPolls,
+                    absent: roomAbsentPolls,
+                    unattempted: roomUnattemptedPolls,
+                    points: roomScore,
+                    maxPoints: roomMaxPoints,
+                    accuracy: roomMaxPoints > 0 ? `${Math.round((roomScore / roomMaxPoints) * 100)}%` : '0%',
+                    avgResponseTime: roomResponseAverage ? `${roomResponseAverage}s` : 'N/A',
+                    badgesEarned: badgeCountByRoom[room.roomCode] || 0,
+                    status: room.status
+                });
+
                 roomWiseScores.push({
                     roomName: room.name,
                     roomCode: room.roomCode,
@@ -130,6 +178,12 @@ export class DashboardService {
 
         const avgScore = totalMaxPoints > 0 ? Math.round((totalScore / totalMaxPoints) * 100) : 0;
         const participationRate = totalPolls > 0 ? `${Math.round((takenPolls / totalPolls) * 100)}%` : '0%';
+        const averageResponseTimeValue = responseTimes.length ? Math.round(responseTimes.reduce((sum, time) => sum + time, 0) / responseTimes.length) : 0;
+        const fastestResponseTime = responseTimes.length ? Math.min(...responseTimes) : 0;
+        const slowestResponseTime = responseTimes.length ? Math.max(...responseTimes) : 0;
+
+        // Sort question history by date in descending order (most recent first)
+        questionHistory.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
         return {
             pollStats: {
@@ -144,6 +198,17 @@ export class DashboardService {
             activePolls,
             upcomingPolls,
             scoreProgression,
+            questionHistory,
+            sessionAnalytics,
+            averageResponseTime: averageResponseTimeValue ? `${averageResponseTimeValue}s` : 'N/A',
+            fastestResponseTime: fastestResponseTime ? `${fastestResponseTime}s` : 'N/A',
+            slowestResponseTime: slowestResponseTime ? `${slowestResponseTime}s` : 'N/A',
+            nextBadge: nextBadge ? {
+                name: nextBadge.name,
+                description: nextBadge.description,
+                criteria: nextBadge.criteria,
+                category: nextBadge.category
+            } : null,
             performanceSummary: {
                 avgScore: `${avgScore}%`,
                 participationRate,

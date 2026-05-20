@@ -19,6 +19,12 @@ export interface Poll {
   answers: PollAnswer[];
 }
 
+export interface GeneratedQuestion {
+  question: string;
+  options: string[];
+  correctOptionIndex: number;
+}
+
 export interface Room {
   roomCode: string;
   name: string;
@@ -28,14 +34,21 @@ export interface Room {
   endedAt?: Date;
   status: 'active' | 'ended';
   polls: Poll[];
+  generatedQuestions?: GeneratedQuestion[];
   totalStudents?: number;
   coHosts?: ActiveCohost[];
   controls?: {
     micBlocked: boolean;
     pollRestricted: boolean;
+    autoGenerationPaused?: boolean;
   };
   joinedStudents?: string[];
-  students?: {firstName: string, email: string}[]
+  students?: {firstName: string, email: string}[];
+  recordingLock?: {
+    userId: string;
+    userName?: string;
+    expiresAt?: Date;
+  } | null;
 }
 
 export interface CohostJwtPayload extends JwtPayload {

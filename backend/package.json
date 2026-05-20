@@ -48,6 +48,7 @@
     "jsonwebtoken": "^9.0.3",
     "mime-types": "^3.0.1",
     "mongodb": "^6.17.0",
+    "mongodb-memory-server": "^11.1.0",
     "mongoose": "^8.16.1",
     "multer": "^2.0.1",
     "nodemon": "^3.1.10",
@@ -58,7 +59,9 @@
     "socket.io-client": "4.8.1",
     "socks-proxy-agent": "^8.0.5",
     "uuid": "^13.0.0",
-    "winston": "^3.17.0"
+    "winston": "^3.17.0",
+    "pdf-parse": "^1.1.1",
+    "mammoth": "^1.4.19"
   },
   "devDependencies": {
     "@faker-js/faker": "^9.8.0",

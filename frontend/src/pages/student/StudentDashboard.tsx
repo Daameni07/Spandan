@@ -1,8 +1,8 @@
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ResponsiveContainer, BarChart, XAxis, YAxis, Tooltip, Bar } from "recharts";
+import { ResponsiveContainer, LineChart, XAxis, YAxis, Tooltip, Line } from "recharts";
 import { useState, useEffect } from "react";
-import { BookOpen, TrendingUp, Calendar, Trophy, Clock, CheckCircle, BarChart2, AlertCircle, ShieldCheck, ArrowRightCircle } from "lucide-react";
+import { BookOpen, TrendingUp, Calendar, Trophy, Clock, CheckCircle, BarChart2, AlertCircle, ShieldCheck, ArrowRightCircle, History } from "lucide-react";
 import { useAuthStore } from "@/lib/store/auth-store";
 import { useNavigate } from "@tanstack/react-router";
 import api from "@/lib/api/api";
@@ -41,6 +41,47 @@ export interface StudentData {
     score: number;
     maxPoints: number;
   }[];
+  questionHistory: {
+    pollId: string;
+    roomName: string;
+    roomCode: string;
+    question: string;
+    options: string[];
+    selectedAnswerIndex: number | null;
+    selectedAnswer: string | null;
+    correctAnswerIndex: number;
+    correctAnswer: string;
+    points: number;
+    maxPoints: number;
+    isCorrect: boolean;
+    answeredAt: string | null;
+    responseTimeSeconds: number | null;
+    answeredStatus: 'correct' | 'incorrect' | 'unanswered' | 'absent';
+    date: string;
+  }[];
+  sessionAnalytics: {
+    roomName: string;
+    roomCode: string;
+    totalPolls: number;
+    taken: number;
+    absent: number;
+    unattempted: number;
+    points: number;
+    maxPoints: number;
+    accuracy: string;
+    avgResponseTime: string;
+    badgesEarned: number;
+    status: string;
+  }[];
+  averageResponseTime: string;
+  fastestResponseTime: string;
+  slowestResponseTime: string;
+  nextBadge?: {
+    name: string;
+    description: string;
+    criteria: string;
+    category: string;
+  } | null;
   performanceSummary: {
     avgScore: string;
     participationRate: string;
@@ -215,9 +256,20 @@ export default function StudentDashboard() {
     //activePolls,
     upcomingPolls,
     scoreProgression,
+    questionHistory,
+    sessionAnalytics,
+    averageResponseTime,
+    fastestResponseTime,
+    slowestResponseTime,
+    nextBadge,
     performanceSummary,
     roomWiseScores
   } = dashboardData;
+  const totalQuestions = questionHistory?.length ?? 0;
+  const correctCount = questionHistory?.filter((item) => item.answeredStatus === 'correct').length ?? 0;
+  const incorrectCount = questionHistory?.filter((item) => item.answeredStatus === 'incorrect').length ?? 0;
+  const unansweredCount = questionHistory?.filter((item) => item.answeredStatus === 'unanswered' || item.answeredStatus === 'absent').length ?? 0;
+  const recentQuestions = questionHistory?.slice(0, 5) ?? [];
 
   //const projectColors = isDark ? ["#3b82f6", "#f59e0b", "#10b981", "#f43f5e"] : ["#6366f1", "#f59e42", "#059669", "#e11d48"];
 
@@ -467,11 +519,12 @@ export default function StudentDashboard() {
             <CardContent className="h-64 sm:h-72 p-0 flex items-center justify-center">
               {scoreProgression && scoreProgression.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={scoreProgression} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                  <LineChart data={scoreProgression} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                     <XAxis
                       dataKey="poll"
                       tick={{ fontSize: 10, fill: isDark ? '#9ca3af' : '#6b7280' }}
                       axisLine={{ stroke: isDark ? '#4b5563' : '#d1d5db' }}
+                      tickFormatter={(value, index) => `Q${index + 1}`}
                     />
                     <YAxis
                       tick={{ fontSize: 10, fill: isDark ? '#9ca3af' : '#6b7280' }}
@@ -484,17 +537,21 @@ export default function StudentDashboard() {
                         borderRadius: '8px',
                         color: isDark ? '#f3f4f6' : '#1f2937'
                       }}
+                      labelFormatter={(label) => label}
                       formatter={(value: any, name: any, props: any) => [
                         `${value} / ${props.payload?.maxPoints || 20}`,
                         'Score'
                       ]}
                     />
-                    <Bar
+                    <Line
+                      type="monotone"
                       dataKey="score"
-                      fill="#3b82f6"
-                      radius={[4, 4, 0, 0]}
+                      stroke="#3b82f6"
+                      strokeWidth={2}
+                      dot={{ fill: '#3b82f6', strokeWidth: 2, r: 4 }}
+                      activeDot={{ r: 6, stroke: '#3b82f6', strokeWidth: 2, fill: '#ffffff' }}
                     />
-                  </BarChart>
+                  </LineChart>
                 </ResponsiveContainer>
               ) : (
                 <div className="text-center text-gray-500 dark:text-gray-400">
@@ -599,6 +656,149 @@ export default function StudentDashboard() {
             </div>
           </CardContent>
         </Card>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+          <Card className="shadow-md dark:shadow-xl bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700">
+            <CardHeader>
+              <CardTitle className="text-blue-700 dark:text-blue-400 flex items-center gap-2 text-sm sm:text-base">
+                <Clock className="h-5 w-5" />
+                Response Time
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="text-sm text-slate-600 dark:text-slate-300">Average</div>
+              <div className="text-2xl font-bold text-blue-600 dark:text-blue-300">{averageResponseTime || 'N/A'}</div>
+              <div className="grid grid-cols-2 gap-3 text-sm text-slate-500 dark:text-slate-400">
+                <div className="rounded-xl bg-slate-100 dark:bg-slate-900 p-3">
+                  <div className="font-semibold">Fastest</div>
+                  <div>{fastestResponseTime || 'N/A'}</div>
+                </div>
+                <div className="rounded-xl bg-slate-100 dark:bg-slate-900 p-3">
+                  <div className="font-semibold">Slowest</div>
+                  <div>{slowestResponseTime || 'N/A'}</div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="shadow-md dark:shadow-xl bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700">
+            <CardHeader>
+              <CardTitle className="text-blue-700 dark:text-blue-400 flex items-center gap-2 text-sm sm:text-base">
+                <ShieldCheck className="h-5 w-5" />
+                Upcoming Achievement
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {nextBadge ? (
+                <>
+                  <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">{nextBadge.name}</div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">{nextBadge.category}</div>
+                  <div className="text-sm text-slate-600 dark:text-slate-300">{nextBadge.description || nextBadge.criteria}</div>
+                </>
+              ) : (
+                <div className="text-sm text-slate-600 dark:text-slate-300">All available achievements unlocked.</div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="shadow-md dark:shadow-xl bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700">
+            <CardHeader>
+              <CardTitle className="text-blue-700 dark:text-blue-400 flex items-center gap-2 text-sm sm:text-base">
+                <BookOpen className="h-5 w-5" />
+                Question Summary
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center justify-between text-sm text-slate-500 dark:text-slate-400">
+                <span>Total</span>
+                <span>{totalQuestions}</span>
+              </div>
+              <div className="flex items-center justify-between text-sm text-slate-500 dark:text-slate-400">
+                <span>Correct</span>
+                <span>{correctCount}</span>
+              </div>
+              <div className="flex items-center justify-between text-sm text-slate-500 dark:text-slate-400">
+                <span>Incorrect</span>
+                <span>{incorrectCount}</span>
+              </div>
+              <div className="flex items-center justify-between text-sm text-slate-500 dark:text-slate-400">
+                <span>Missed</span>
+                <span>{unansweredCount}</span>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-6">
+          <Card className="shadow-md dark:shadow-xl bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700">
+            <CardHeader>
+              <CardTitle className="text-blue-700 dark:text-blue-400 flex items-center gap-2 text-sm sm:text-base">
+                <TrendingUp className="h-5 w-5" />
+                Session Analytics
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {sessionAnalytics && sessionAnalytics.length > 0 ? (
+                sessionAnalytics.map((session, idx) => (
+                  <div key={`${session.roomCode}-${idx}`} className="rounded-2xl border border-slate-200 dark:border-slate-700 p-4 bg-slate-50 dark:bg-slate-900/60">
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-800 dark:text-slate-200">{session.roomName}</div>
+                        <div className="text-xs text-slate-500 dark:text-slate-400">{session.roomCode}</div>
+                      </div>
+                      <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-300">{session.accuracy}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs sm:text-sm text-slate-600 dark:text-slate-300">
+                      <div>Polls: {session.totalPolls}</div>
+                      <div>Answered: {session.taken}</div>
+                      <div>Missed: {session.absent}</div>
+                      <div>Badges: {session.badgesEarned}</div>
+                      <div>Points: {session.points}/{session.maxPoints}</div>
+                      <div>Avg. Response: {session.avgResponseTime}</div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-sm text-slate-500 dark:text-slate-400">No session analytics available yet.</div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="shadow-md dark:shadow-xl bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700">
+            <CardHeader>
+              <CardTitle className="text-blue-700 dark:text-blue-400 flex items-center gap-2 text-sm sm:text-base">
+                <History className="h-5 w-5" />
+                Recent Question History
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {recentQuestions.length > 0 ? (
+                recentQuestions.map((entry, idx) => (
+                  <div key={`${entry.pollId}-${idx}`} className="rounded-2xl border border-slate-200 dark:border-slate-700 p-4 bg-slate-50 dark:bg-slate-900/60">
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold text-slate-800 dark:text-slate-200 line-clamp-2 break-words">{entry.question}</div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400">{entry.roomName}</div>
+                      </div>
+                      <span className={`text-[11px] font-semibold ${entry.answeredStatus === 'correct' ? 'text-emerald-600' : entry.answeredStatus === 'incorrect' ? 'text-rose-600' : 'text-slate-500'}`}>
+                        {entry.answeredStatus.charAt(0).toUpperCase() + entry.answeredStatus.slice(1)}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs text-slate-600 dark:text-slate-400">
+                      <div>Points: {entry.points}/{entry.maxPoints}</div>
+                      <div>Time: {entry.responseTimeSeconds !== null ? `${entry.responseTimeSeconds}s` : 'N/A'}</div>
+                      <div>Answer: {entry.selectedAnswer || 'No answer'}</div>
+                      <div>Correct: {entry.correctAnswer}</div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-sm text-slate-500 dark:text-slate-400">No recent question history available.</div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
         <Card className="mb-6 bg-white/80 dark:bg-gray-800/80 backdrop-blur-xl border-0 shadow-xl shadow-indigo-500/10">
          <CardHeader>
             <CardTitle className="text-blue-800 dark:text-blue-200 font-bold flex items-center justify-between gap-2 text-sm sm:text-base">

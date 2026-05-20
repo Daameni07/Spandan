@@ -31,7 +31,6 @@
         "build",
         "dist",
         "**/*.spec.ts",
-        "**/*.d.ts",
         "vite.config.ts"
     ]
 }

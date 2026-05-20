@@ -1,12 +1,19 @@
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { ClipboardList, Users, TrendingUp, Clock, HelpCircle, BarChart2, Loader2, ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useAuthStore } from "@/lib/store/auth-store";
 import { useNavigate } from "@tanstack/react-router";
 import api from "@/lib/api/api";
+import * as XLSX from "xlsx";
+import { saveAs } from "file-saver";
+import html2canvas from "html2canvas";
+import { jsPDF } from "jspdf";
 
 export interface TeacherData {
   summary: {
@@ -35,12 +42,46 @@ export interface FAQ {
   answer: string;
 }
 
+type ReportField =
+  | "roomName"
+  | "roomCode"
+  | "status"
+  | "createdAt"
+  | "totalPolls"
+  | "totalResponses"
+  | "participationRate"
+  | "totalStudents";
+
+const reportFieldOptions: { key: ReportField; label: string }[] = [
+  { key: "roomName", label: "Room Name" },
+  { key: "roomCode", label: "Room Code" },
+  { key: "status", label: "Status" },
+  { key: "createdAt", label: "Created Date" },
+  { key: "totalPolls", label: "Total Polls" },
+  { key: "totalResponses", label: "Total Responses" },
+  { key: "participationRate", label: "Participation Rate" },
+  { key: "totalStudents", label: "Total Students" },
+];
+
 export default function TeacherDashboard() {
   const { user } = useAuthStore();
   const [isDark] = useState(false);
   const [dashboardData, setDashboardData] = useState<TeacherData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [reportFormat, setReportFormat] = useState<"excel" | "pdf">("excel");
+  const [selectedReportFields, setSelectedReportFields] = useState<ReportField[]>([
+    "roomName",
+    "roomCode",
+    "status",
+    "createdAt",
+    "totalPolls",
+    "totalResponses",
+    "participationRate",
+  ]);
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const previewRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -137,6 +178,143 @@ export default function TeacherDashboard() {
       month: 'short',
       day: 'numeric'
     });
+  };
+
+  const reportRows = combinedRooms.map(room => ({
+    roomName: room.roomName,
+    roomCode: room.roomCode,
+    status: room.status ?? 'Ended',
+    createdAt: formatDate(room.createdAt),
+    totalPolls: room.totalPolls ?? 0,
+    totalResponses: room.totalResponses ?? 0,
+    participationRate: room.totalPolls
+      ? `${Math.round(((room.totalResponses ?? 0) / room.totalPolls) * 100)}%`
+      : '0%',
+    totalStudents: room.totalStudents ?? 0,
+  }));
+
+  const toggleReportField = (field: ReportField) => {
+    setSelectedReportFields(prev =>
+      prev.includes(field)
+        ? prev.filter(item => item !== field)
+        : [...prev, field]
+    );
+  };
+
+  const downloadExcelReport = () => {
+    if (!reportRows.length || !selectedReportFields.length) {
+      return;
+    }
+
+    const data = reportRows.map(row => {
+      return selectedReportFields.reduce((acc, key) => {
+        const label = reportFieldOptions.find(field => field.key === key)?.label ?? key;
+        acc[label] = row[key as keyof typeof row];
+        return acc;
+      }, {} as Record<string, string | number>);
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Teacher Report");
+    const blob = new Blob([XLSX.write(workbook, { bookType: "xlsx", type: "array" })], {
+      type: "application/octet-stream"
+    });
+    saveAs(blob, `teacher-report-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const downloadPdfReport = () => {
+    if (!reportRows.length || !selectedReportFields.length) {
+      return;
+    }
+    setReportModalOpen(false);
+    setPreviewModalOpen(true);
+  };
+
+  const downloadPdfAsFile = async () => {
+    try {
+      // Create a simple PDF-friendly HTML element
+      const pdfElement = document.createElement("div");
+      pdfElement.style.position = "absolute";
+      pdfElement.style.left = "-9999px";
+      pdfElement.style.width = "800px";
+      pdfElement.style.padding = "20px";
+      pdfElement.style.fontFamily = "Arial, sans-serif";
+      pdfElement.style.backgroundColor = "white";
+      pdfElement.style.color = "#000";
+
+      const headers = reportFieldOptions
+        .filter(field => selectedReportFields.includes(field.key))
+        .map(field => field.label);
+
+      let html = `
+        <h1 style="font-size: 20px; margin-bottom: 10px;">Teacher Room Report</h1>
+        <p style="color: #666; font-size: 12px; margin-bottom: 20px;">Generated on ${new Date().toLocaleString()}</p>
+        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+          <thead>
+            <tr style="background-color: #f3f4f6;">
+              ${headers.map(h => `<th style="border: 1px solid #ccc; padding: 10px; text-align: left; font-weight: bold;">${h}</th>`).join("")}
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      reportRows.forEach((row, idx) => {
+        const bgColor = idx % 2 === 0 ? "#fff" : "#f9f9f9";
+        html += `<tr style="background-color: ${bgColor};">`;
+        selectedReportFields.forEach(key => {
+          html += `<td style="border: 1px solid #ccc; padding: 10px;">${row[key as keyof typeof row]}</td>`;
+        });
+        html += `</tr>`;
+      });
+
+      html += `
+          </tbody>
+        </table>
+      `;
+
+      pdfElement.innerHTML = html;
+      document.body.appendChild(pdfElement);
+
+      const canvas = await html2canvas(pdfElement, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: "#ffffff",
+        allowTaint: true,
+      });
+
+      document.body.removeChild(pdfElement);
+
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: "a4",
+      });
+
+      const imgWidth = 210;
+      const pageHeight = 297;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      let heightLeft = imgHeight;
+      let position = 0;
+
+      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+
+      while (heightLeft >= 0) {
+        position = heightLeft - imgHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+
+      pdf.save(`teacher-report-${new Date().toISOString().slice(0, 10)}.pdf`);
+      setPreviewModalOpen(false);
+    } catch (err) {
+      console.error("Error generating PDF:", err);
+      alert("Failed to generate PDF. Please try again.");
+    }
   };
 
   /* const getStatusColor = (status: 'active' | 'ended' | undefined): string => {
@@ -340,9 +518,7 @@ export default function TeacherDashboard() {
             <Button
               variant="outline"
               className="w-full justify-start text-sm sm:text-base"
-              onClick={() => {
-                navigate({ to: '/teacher/manage-rooms' });
-              }}
+              onClick={() => setReportModalOpen(true)}
             >
               Generate Reports
             </Button>
@@ -517,6 +693,141 @@ export default function TeacherDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog open={reportModalOpen} onOpenChange={setReportModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Generate Report</DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              Choose the report fields and format to export your classroom data.
+            </p>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {reportFieldOptions.map(field => (
+                <Label
+                  key={field.key}
+                  className="cursor-pointer rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm font-medium text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                >
+                  <div className="flex items-center gap-3">
+                    <Checkbox
+                      checked={selectedReportFields.includes(field.key)}
+                      onCheckedChange={() => toggleReportField(field.key)}
+                    />
+                    <span>{field.label}</span>
+                  </div>
+                </Label>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+                <Button
+                type="button"
+                variant={reportFormat === "excel" ? "secondary" : "outline"}
+                className="w-full"
+                onClick={() => setReportFormat("excel")}
+              >
+                Excel
+              </Button>
+              <Button
+                type="button"
+                variant={reportFormat === "pdf" ? "secondary" : "outline"}
+                className="w-full"
+                onClick={() => setReportFormat("pdf")}
+              >
+                PDF
+              </Button>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+              {reportRows.length === 0 ? (
+                "No rooms are available for export."
+              ) : selectedReportFields.length === 0 ? (
+                "Select at least one field to export."
+              ) : (
+                `This report will export ${reportRows.length} room${reportRows.length > 1 ? 's' : ''} with ${selectedReportFields.length} field${selectedReportFields.length > 1 ? 's' : ''}.`
+              )}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setReportModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={!reportRows.length || selectedReportFields.length === 0}
+              onClick={() => {
+                if (reportFormat === "excel") {
+                  downloadExcelReport();
+                  setReportModalOpen(false);
+                } else {
+                  downloadPdfReport();
+                }
+              }}
+            >
+              {reportFormat === "excel" ? "Download Excel" : "Preview & Download PDF"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={previewModalOpen} onOpenChange={setPreviewModalOpen}>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Report Preview</DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              Review your report below and download as PDF
+            </p>
+          </DialogHeader>
+          <div ref={previewRef} className="overflow-auto bg-white p-6 rounded-lg border">
+            <div className="mb-4">
+              <h2 className="text-xl font-bold text-gray-900 mb-1">Teacher Room Report</h2>
+              <p className="text-sm text-gray-600">Generated on {new Date().toLocaleString()}</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="bg-gray-100">
+                    {reportFieldOptions
+                      .filter(field => selectedReportFields.includes(field.key))
+                      .map(field => (
+                        <th
+                          key={field.key}
+                          className="border border-gray-300 px-4 py-2 text-left font-semibold text-gray-700"
+                        >
+                          {field.label}
+                        </th>
+                      ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {reportRows.map((row, idx) => (
+                    <tr key={idx} className={idx % 2 === 0 ? "bg-white" : "bg-gray-50"}>
+                      {selectedReportFields.map(key => (
+                        <td
+                          key={`${idx}-${key}`}
+                          className="border border-gray-300 px-4 py-2 text-gray-700"
+                        >
+                          {row[key as keyof typeof row]}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setPreviewModalOpen(false)}>
+              Close
+            </Button>
+            <Button type="button" onClick={downloadPdfAsFile}>
+              Download as PDF
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
