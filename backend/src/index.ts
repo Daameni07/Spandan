@@ -44,7 +44,9 @@ const moduleOptions: RoutingControllersOptions = {
 };
 
 const app = express();
-
+app.get("/", (req, res) => {
+  res.send("Spandan Backend is running 🚀");
+});
 useExpressServer(app, {
   ...moduleOptions,
   middlewares: [loggingHandler, HttpErrorHandler], // Add your middleware here
