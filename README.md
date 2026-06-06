@@ -13,7 +13,7 @@ Spandan is an AI-powered classroom engagement platform designed to make learning
 * 🔐 Secure Role-Based Access Control
 * ⚡ Real-Time Classroom Engagement
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 ### Frontend
 
